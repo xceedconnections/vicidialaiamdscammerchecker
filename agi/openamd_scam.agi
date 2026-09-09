@@ -96,6 +96,16 @@ unless ($body =~ /"scam_protection_enabled"\s*:\s*true/i) {
     exit 0;
 }
 
+# Portal-controlled length (default 120s). Accept 30–600.
+my $secs = 120;
+if ($body =~ /"scam_record_seconds"\s*:\s*(\d+)/i) {
+    $secs = int($1);
+} elsif ($body =~ /"record_max_seconds"\s*:\s*(\d+)/i) {
+    $secs = int($1);
+}
+$secs = 120 if $secs < 30;
+$secs = 600 if $secs > 600;
+
 my $uid = v('UNIQUEID');
 $uid =~ s/[^\w.\-]+/_/g;
 $uid = time() . '-scam' if $uid eq '';
@@ -129,12 +139,11 @@ $AGI->exec('MixMonitor', "${wav},b,${cmd}");
 
 my $chan = $input{'channel'} // '';
 $chan =~ s/'//g;
-my $secs = 120;
 if ($chan ne '') {
-    # Stop after 2 minutes even if the call continues (does not hang up the call).
+    # Stop after portal-configured seconds even if the call continues (does not hang up).
     my $stop = qq{(sleep $secs; /usr/sbin/asterisk -rx "mixmonitor stop $chan" >/dev/null 2>&1) &};
     system($stop);
-    $AGI->verbose("OpenAMD SCAM: MixMonitor armed file=$wav (max ${secs}s)", 1);
+    $AGI->verbose("OpenAMD SCAM: MixMonitor armed file=$wav (max ${secs}s from portal)", 1);
 } else {
     $AGI->verbose("OpenAMD SCAM: MixMonitor armed file=$wav (no channel for timed stop)", 1);
 }
