@@ -72,7 +72,18 @@ sub scam_urls {
     my $base = $analyze_url // '';
     $base =~ s#/api/v1/analyze\s*$##i;
     $base =~ s#/+$##;
-    return ("$base/api/v1/scam/config", "$base/api/v1/scam/recording");
+    return (
+        "$base/api/v1/scam/config",
+        "$base/api/v1/scam/recording",
+        "$base/api/v1/scam/arm",
+    );
+}
+
+sub shell_quote {
+    my ($s) = @_;
+    $s = '' unless defined $s;
+    $s =~ s/'/'\\''/g;
+    return "'$s'";
 }
 
 # Fully detach from AGI so Asterisk does not wait on sleep children.
@@ -94,7 +105,7 @@ sub spawn_detached {
 
 eval {
     my ($url, $key, $ssl_verify) = load_conf('http://127.0.0.1:2130/api/v1/analyze', '', 'auto');
-    my ($cfg_url, $upload_url) = scam_urls($url);
+    my ($cfg_url, $upload_url, $arm_url) = scam_urls($url);
 
     unless ($key) {
         $AGI->verbose('OpenAMD SCAM: no API key — skip (agent continues)', 1);
@@ -157,8 +168,9 @@ eval {
         exit 0;
     }
 
+    # Record channel audio (not bridged-only) so pre-agent + agent leg both land.
     # Use ^ as MixMonitor command arg separator (no spaces — AGI-safe)
-    my $mm_ok = eval { $AGI->exec('MixMonitor', "${wav},b,${finish}^${wav}^${meta}"); 1 };
+    my $mm_ok = eval { $AGI->exec('MixMonitor', "${wav},,${finish}^${wav}^${meta}"); 1 };
     if (!$mm_ok) {
         $AGI->verbose('OpenAMD SCAM: MixMonitor failed — skip (agent continues)', 1);
         exit 0;
@@ -171,14 +183,27 @@ eval {
         spawn_detached(
             "sleep $secs; /usr/sbin/asterisk -rx 'mixmonitor stop $chan' >/dev/null 2>&1"
         );
-        $AGI->set_variable('OPENAMD_SCAM_ARMED', '1');
-        $AGI->verbose(
-            "OpenAMD SCAM: armed $wav max ${secs}s — continuing to agent NOW",
-            1
-        );
-    } else {
-        $AGI->verbose("OpenAMD SCAM: armed $wav (no timed stop) — continuing to agent NOW", 1);
     }
+
+    # Notify portal immediately (detached) so SCAMMERS shows PENDING before upload finishes
+    my $curl_k = $ssl_verify ? '' : '-k ';
+    my $arm_cmd =
+        "curl -fsS ${curl_k}--max-time 3 "
+        . "-H " . shell_quote("X-API-Key: $key") . " "
+        . "-F " . shell_quote("callid=$uid") . " "
+        . "-F " . shell_quote("campaign=$camp") . " "
+        . "-F " . shell_quote("caller=$caller") . " "
+        . "-F " . shell_quote("called=$called") . " "
+        . "-F " . shell_quote("agent=$agent") . " "
+        . shell_quote($arm_url)
+        . " >/dev/null 2>&1";
+    spawn_detached($arm_cmd);
+
+    $AGI->set_variable('OPENAMD_SCAM_ARMED', '1');
+    $AGI->verbose(
+        "OpenAMD SCAM: armed $wav max ${secs}s — continuing to agent NOW",
+        1
+    );
 };
 if ($@) {
     $AGI->verbose("OpenAMD SCAM: exception $@ — agent continues", 1);
