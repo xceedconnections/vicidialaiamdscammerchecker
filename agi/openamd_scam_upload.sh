@@ -1,6 +1,6 @@
 #!/bin/bash
-# Upload full-call MixMonitor WAV to AIAMD SCAM API (HTTP to :2130 — not file sync).
-# Args: <wav_path> <meta_path>
+# Upload MixMonitor WAV to AIAMD SCAM API (HTTP :2130 — not file sync).
+# MixMonitor invokes with ^-separated args: script^wav^meta
 set -euo pipefail
 
 WAV="${1:-}"
@@ -10,12 +10,14 @@ CONF="/etc/asterisk/openamd.conf"
 log() { logger -t openamd_scam "$*" 2>/dev/null || echo "openamd_scam: $*" >&2; }
 
 [[ -n "$WAV" && -f "$WAV" ]] || { log "missing wav: $WAV"; exit 0; }
+if [[ -z "$META" ]]; then
+  META="${WAV%.wav}.meta"
+fi
 
 KEY=""
 URL=""
 SSL_VERIFY=1
 if [[ -r "$CONF" ]]; then
-  # shellcheck disable=SC1090
   while IFS= read -r line; do
     [[ "$line" =~ ^OPENAMD_API_KEY=(.*)$ ]] && KEY="${BASH_REMATCH[1]}"
     [[ "$line" =~ ^OPENAMD_URL=(.*)$ ]] && URL="${BASH_REMATCH[1]}"
@@ -29,7 +31,7 @@ CALLED=""
 CAMP=""
 AGENT=""
 UPLOAD=""
-if [[ -n "$META" && -f "$META" ]]; then
+if [[ -f "$META" ]]; then
   while IFS= read -r line; do
     case "$line" in
       callid=*) CALLID="${line#callid=}" ;;
@@ -52,7 +54,6 @@ if [[ "$SSL_VERIFY" =~ ^(0|false|no|off)$ ]]; then
   CURL_OPTS+=(-k)
 fi
 
-# Skip tiny files (failed monitor)
 BYTES=$(stat -c%s "$WAV" 2>/dev/null || echo 0)
 if [[ "$BYTES" -lt 2000 ]]; then
   log "wav too small (${BYTES}) — skip upload"
