@@ -3,9 +3,9 @@
 # OpenAMD SCAM arm — MixMonitor agent leg + upload to AIAMD.
 # MUST NOT block HUMAN -> agent. Always exit 0 immediately after arming.
 #
-# Bug fixed: background "sleep N; mixmonitor stop" was staying in the AGI
-# process tree, so Asterisk kept the AGI open for N seconds, returned 4,
-# and never ran agi-VDAD_ALL_outbound.agi.
+# Upload is driven by a detached watchdog (not only MixMonitor's finish
+# command). ViciBox often fails to pass finish-script args, leaving
+# SCAMMERS stuck on PENDING with no audio.
 #
 use strict;
 use warnings;
@@ -76,6 +76,7 @@ sub scam_urls {
         "$base/api/v1/scam/config",
         "$base/api/v1/scam/recording",
         "$base/api/v1/scam/arm",
+        "$base/api/v1/scam/finalize",
     );
 }
 
@@ -86,13 +87,13 @@ sub shell_quote {
     return "'$s'";
 }
 
-# Fully detach from AGI so Asterisk does not wait on sleep children.
+# Fully detach from AGI so Asterisk does not wait on children.
 sub spawn_detached {
     my ($bash_cmd) = @_;
     my $pid = fork();
     return unless defined $pid;
     if ($pid == 0) {
-        fork() && exit 0;    # intermediate exits; grandchild continues
+        fork() && exit 0;
         setsid();
         open STDIN,  '</dev/null';
         open STDOUT, '>/dev/null';
@@ -100,12 +101,12 @@ sub spawn_detached {
         exec('/bin/bash', '-c', $bash_cmd);
         exit 0;
     }
-    waitpid($pid, 0);        # only wait for intermediate (instant)
+    waitpid($pid, 0);
 }
 
 eval {
     my ($url, $key, $ssl_verify) = load_conf('http://127.0.0.1:2130/api/v1/analyze', '', 'auto');
-    my ($cfg_url, $upload_url, $arm_url) = scam_urls($url);
+    my ($cfg_url, $upload_url, $arm_url, $finalize_url) = scam_urls($url);
 
     unless ($key) {
         $AGI->verbose('OpenAMD SCAM: no API key — skip (agent continues)', 1);
@@ -157,6 +158,7 @@ eval {
         print $mf "campaign=$camp\n";
         print $mf "agent=$agent\n";
         print $mf "upload_url=$upload_url\n";
+        print $mf "finalize_url=$finalize_url\n";
         print $mf "record_seconds=$secs\n";
         close $mf;
     }
@@ -168,9 +170,8 @@ eval {
         exit 0;
     }
 
-    # Record channel audio (not bridged-only) so pre-agent + agent leg both land.
-    # Use ^ as MixMonitor command arg separator (no spaces — AGI-safe)
-    my $mm_ok = eval { $AGI->exec('MixMonitor', "${wav},,${finish}^${wav}^${meta}"); 1 };
+    # Start MixMonitor with NO finish command — watchdog uploads reliably.
+    my $mm_ok = eval { $AGI->exec('MixMonitor', "${wav}"); 1 };
     if (!$mm_ok) {
         $AGI->verbose('OpenAMD SCAM: MixMonitor failed — skip (agent continues)', 1);
         exit 0;
@@ -178,14 +179,49 @@ eval {
 
     my $chan = $input{'channel'} // '';
     $chan =~ s/['"]//g;
-    if ($chan ne '') {
-        # MUST be fully detached or AGI blocks for $secs and agent never connects
-        spawn_detached(
-            "sleep $secs; /usr/sbin/asterisk -rx 'mixmonitor stop $chan' >/dev/null 2>&1"
-        );
-    }
+    $chan =~ s/[^\w\-\/\.@]//g;
 
-    # Notify portal immediately (detached) so SCAMMERS shows PENDING before upload finishes
+    # Watchdog: wait until channel gone or max secs → stop MixMonitor → upload
+    # Do NOT hold a flock around upload.sh (upload.sh locks itself).
+    my $q_wav = shell_quote($wav);
+    my $q_meta = shell_quote($meta);
+    my $q_finish = shell_quote($finish);
+    my $watch;
+    if ($chan ne '') {
+        my $q_chan = shell_quote($chan);
+        $watch = qq{
+for i in \$(seq 1 $secs); do
+  if ! /usr/sbin/asterisk -rx "core show channels concise" 2>/dev/null | grep -F -- $q_chan >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+/usr/sbin/asterisk -rx "mixmonitor stop $chan" >/dev/null 2>&1 || true
+for j in 1 2 3 4 5 6 7 8 9 10; do
+  if [ -f $q_wav ] && [ "\$(stat -c%s $q_wav 2>/dev/null || echo 0)" -gt 44 ]; then
+    break
+  fi
+  sleep 0.5
+done
+sleep 1
+$q_finish $q_wav $q_meta
+};
+    } else {
+        $watch = qq{
+sleep $secs
+for j in 1 2 3 4 5 6 7 8 9 10; do
+  if [ -f $q_wav ] && [ "\$(stat -c%s $q_wav 2>/dev/null || echo 0)" -gt 44 ]; then
+    break
+  fi
+  sleep 0.5
+done
+sleep 1
+$q_finish $q_wav $q_meta
+};
+    }
+    spawn_detached($watch);
+
+    # Notify portal immediately so SCAMMERS shows PENDING
     my $curl_k = $ssl_verify ? '' : '-k ';
     my $arm_cmd =
         "curl -fsS ${curl_k}--max-time 3 "
@@ -201,7 +237,7 @@ eval {
 
     $AGI->set_variable('OPENAMD_SCAM_ARMED', '1');
     $AGI->verbose(
-        "OpenAMD SCAM: armed $wav max ${secs}s — continuing to agent NOW",
+        "OpenAMD SCAM: armed $wav max ${secs}s — watchdog upload — continuing to agent NOW",
         1
     );
 };
