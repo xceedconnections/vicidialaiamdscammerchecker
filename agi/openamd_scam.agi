@@ -1,26 +1,22 @@
 #!/usr/bin/env perl
 #
-# OpenAMD SCAM arm — full agent-leg MixMonitor + upload to AIAMD.
-# Does NOT change AMD analyze / HUMAN vs MACHINE. Only runs on HUMAN path
-# after 8399 when portal "SCAM protection" is ON for this dialer's API key.
+# OpenAMD SCAM arm — MixMonitor agent leg + upload to AIAMD.
+# MUST NOT block HUMAN -> agent. Always exit 0 immediately after arming.
 #
-# CRITICAL: must NEVER block or hang up the agent path. Always exit 0.
-# Fail-open: any error → skip MixMonitor and let VDAD run.
-#
-# Usage:
-#   AGI(openamd_scam.agi,arm)
+# Bug fixed: background "sleep N; mixmonitor stop" was staying in the AGI
+# process tree, so Asterisk kept the AGI open for N seconds, returned 4,
+# and never ran agi-VDAD_ALL_outbound.agi.
 #
 use strict;
 use warnings;
 use Asterisk::AGI;
 use LWP::UserAgent;
 use HTTP::Request::Common;
+use POSIX qw(setsid);
 
 my $AGI = new Asterisk::AGI;
 my %input = $AGI->ReadParse();
-my $mode = $ARGV[0] // 'arm';
 
-# Always continue dialplan to agi-VDAD_ALL_outbound even if this script dies.
 $AGI->set_variable('OPENAMD_SCAM_ARMED', '0');
 
 sub v {
@@ -79,16 +75,32 @@ sub scam_urls {
     return ("$base/api/v1/scam/config", "$base/api/v1/scam/recording");
 }
 
+# Fully detach from AGI so Asterisk does not wait on sleep children.
+sub spawn_detached {
+    my ($bash_cmd) = @_;
+    my $pid = fork();
+    return unless defined $pid;
+    if ($pid == 0) {
+        fork() && exit 0;    # intermediate exits; grandchild continues
+        setsid();
+        open STDIN,  '</dev/null';
+        open STDOUT, '>/dev/null';
+        open STDERR, '>/dev/null';
+        exec('/bin/bash', '-c', $bash_cmd);
+        exit 0;
+    }
+    waitpid($pid, 0);        # only wait for intermediate (instant)
+}
+
 eval {
     my ($url, $key, $ssl_verify) = load_conf('http://127.0.0.1:2130/api/v1/analyze', '', 'auto');
     my ($cfg_url, $upload_url) = scam_urls($url);
 
     unless ($key) {
-        $AGI->verbose('OpenAMD SCAM: API key missing — skip (agent continues)', 1);
+        $AGI->verbose('OpenAMD SCAM: no API key — skip (agent continues)', 1);
         exit 0;
     }
 
-    # Fast fail-open — never stall agent connect waiting on portal
     my $ua = make_ua(1, $ssl_verify);
     my $req = HTTP::Request->new(GET => $cfg_url);
     $req->header('X-API-Key' => $key);
@@ -100,7 +112,7 @@ eval {
     }
     my $body = $res->decoded_content // '';
     unless ($body =~ /"scam_protection_enabled"\s*:\s*true/i) {
-        $AGI->verbose('OpenAMD SCAM: protection OFF — skip MixMonitor (agent continues)', 1);
+        $AGI->verbose('OpenAMD SCAM: OFF — skip (agent continues)', 1);
         exit 0;
     }
 
@@ -110,13 +122,13 @@ eval {
     } elsif ($body =~ /"record_max_seconds"\s*:\s*(\d+)/i) {
         $secs = int($1);
     }
-    $secs = 30 if $secs < 30;
+    $secs = 30  if $secs < 30;
     $secs = 600 if $secs > 600;
 
     my $uid = v('UNIQUEID');
     $uid =~ s/[^\w.\-]+/_/g;
     $uid = time() . '-scam' if $uid eq '';
-    my $wav = "/tmp/openamd-scam-${uid}.wav";
+    my $wav  = "/tmp/openamd-scam-${uid}.wav";
     my $meta = "/tmp/openamd-scam-${uid}.meta";
 
     my $caller = v('OPENAMD_CALLER');
@@ -134,37 +146,41 @@ eval {
         print $mf "campaign=$camp\n";
         print $mf "agent=$agent\n";
         print $mf "upload_url=$upload_url\n";
+        print $mf "record_seconds=$secs\n";
         close $mf;
     }
 
     my $finish = '/var/lib/asterisk/agi-bin/openamd_scam_upload.sh';
     $finish = '/usr/share/asterisk/agi-bin/openamd_scam_upload.sh' unless -x $finish;
     unless (-x $finish) {
-        $AGI->verbose("OpenAMD SCAM: upload script missing — skip (agent continues)", 1);
+        $AGI->verbose('OpenAMD SCAM: upload script missing — skip (agent continues)', 1);
         exit 0;
     }
 
-    my $cmd = "${finish} ${wav} ${meta}";
-    # MixMonitor must not kill the call if it fails
-    my $mm = eval { $AGI->exec('MixMonitor', "${wav},b,${cmd}"); 1 };
-    if (!$mm) {
+    # Use ^ as MixMonitor command arg separator (no spaces — AGI-safe)
+    my $mm_ok = eval { $AGI->exec('MixMonitor', "${wav},b,${finish}^${wav}^${meta}"); 1 };
+    if (!$mm_ok) {
         $AGI->verbose('OpenAMD SCAM: MixMonitor failed — skip (agent continues)', 1);
         exit 0;
     }
 
     my $chan = $input{'channel'} // '';
-    $chan =~ s/'//g;
-    $chan =~ s/"//g;
+    $chan =~ s/['"]//g;
     if ($chan ne '') {
-        my $stop = qq{(sleep $secs; /usr/sbin/asterisk -rx 'mixmonitor stop $chan' >/dev/null 2>&1) &};
-        system($stop);
+        # MUST be fully detached or AGI blocks for $secs and agent never connects
+        spawn_detached(
+            "sleep $secs; /usr/sbin/asterisk -rx 'mixmonitor stop $chan' >/dev/null 2>&1"
+        );
         $AGI->set_variable('OPENAMD_SCAM_ARMED', '1');
-        $AGI->verbose("OpenAMD SCAM: MixMonitor armed file=$wav (max ${secs}s) — agent continues", 1);
+        $AGI->verbose(
+            "OpenAMD SCAM: armed $wav max ${secs}s — continuing to agent NOW",
+            1
+        );
     } else {
-        $AGI->verbose("OpenAMD SCAM: MixMonitor armed file=$wav (no timed stop) — agent continues", 1);
+        $AGI->verbose("OpenAMD SCAM: armed $wav (no timed stop) — continuing to agent NOW", 1);
     }
 };
 if ($@) {
-    $AGI->verbose("OpenAMD SCAM: exception $@ — skip (agent continues)", 1);
+    $AGI->verbose("OpenAMD SCAM: exception $@ — agent continues", 1);
 }
 exit 0;
