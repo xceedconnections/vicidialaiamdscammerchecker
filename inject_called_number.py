@@ -183,7 +183,8 @@ def inject_file(path):
         print("SKIP (missing): %s" % path)
         return 0, []
 
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines(True)
+    original = path.read_text(encoding="utf-8", errors="replace")
+    lines = original.splitlines(True)
     out = []
     injected = 0
     patterns = []
@@ -256,8 +257,11 @@ def inject_file(path):
         out.append(line)
         i += 1
 
-    path.write_text("".join(out), encoding="utf-8")
-    return injected, patterns
+    new_text = "".join(out)
+    changed = new_text != original
+    if changed:
+        path.write_text(new_text, encoding="utf-8")
+    return injected, patterns, changed
 
 
 def diagnose(path):
@@ -276,39 +280,61 @@ def diagnose(path):
         print("  patterns sample: %s" % ", ".join(pats[:20]))
 
 
-def inject(paths=None):
+def inject(paths=None, quiet=False):
     targets = list(paths) if paths else list(DEFAULT_TARGETS)
-    # Always try vicidial first; also custom if present
-    custom = Path("/etc/asterisk/extensions-custom.conf")
-    if custom.exists() and custom not in targets:
-        # Only inject into custom if it has outbound patterns (rare)
-        pass
-
     total = 0
+    changed_any = False
     all_patterns = []
     for path in targets:
-        n, pats = inject_file(path)
+        n, pats, changed = inject_file(path)
         total += n
+        changed_any = changed_any or changed
         all_patterns.extend(pats)
+
+    if quiet:
+        if total:
+            print("Injected AstDB store on %d outbound pattern(s)" % total)
+            for p in all_patterns:
+                print("  %s" % p)
+        return total, changed_any
 
     print("Injected AstDB store on %d outbound pattern(s)" % total)
     for p in all_patterns:
         print("  %s" % p)
     if total == 0:
-        print("WARNING: No outbound Set(CALLERID)/Dial patterns found to inject.")
+        # Already covered vs truly missing
+        has_store = False
         for path in targets:
-            diagnose(path)
-        print("Called Number needs an outbound dialplan entry with Set(CALLERID) or Dial(${EXTEN:N}).")
-    return total
+            if path.exists() and "NoOp(OpenAMD STORE" in path.read_text(
+                encoding="utf-8", errors="replace"
+            ):
+                has_store = True
+                break
+        if has_store:
+            print("OK: outbound patterns already have OpenAMD STORE (nothing new).")
+        else:
+            print("WARNING: No outbound Set(CALLERID)/Dial patterns found to inject.")
+            for path in targets:
+                diagnose(path)
+            print(
+                "Called Number needs an outbound dialplan entry with "
+                "Set(CALLERID) or Dial(${EXTEN:N})."
+            )
+    return total, changed_any
 
 
 def main():
-    if len(sys.argv) > 1:
-        targets = [Path(a) for a in sys.argv[1:]]
-        n = inject(targets)
+    args = [a for a in sys.argv[1:] if a != "--quiet"]
+    quiet = "--quiet" in sys.argv[1:]
+    if args:
+        targets = [Path(a) for a in args]
+        n, changed = inject(targets, quiet=quiet)
     else:
-        n = inject()
-    sys.exit(0 if n >= 0 else 1)
+        n, changed = inject(quiet=quiet)
+    # Exit 0 always for cron; print changed marker for wrappers
+    if quiet and changed:
+        print("CHANGED")
+    sys.exit(0)
 
 
 if __name__ == "__main__":

@@ -50,6 +50,17 @@ bash vicibox_install.sh http://aiamd.xceedconnections.com:2130 oam_YOUR_API_KEY
 
 Campaign AMD extension remains **8399**.
 
+## New carrier prefixes (automatic)
+
+Install also enables `openamd_auto_store.sh` (cron every minute + optional systemd path).
+When VICIdial rebuilds `extensions-vicidial.conf` or you add a new carrier prefix,
+OpenAMD STORE (Caller ID / Called Number) is re-applied automatically — no reinstall.
+
+```bash
+bash /usr/local/sbin/openamd_auto_store.sh
+grep -n 'OpenAMD STORE' /etc/asterisk/extensions-vicidial.conf | head
+```
+
 ## Restore AMD-only dialer (no SCAM upload)
 
 Reinstall the normal package (overwrites 8399 human path without scam AGI):

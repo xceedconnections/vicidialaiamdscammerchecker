@@ -51,3 +51,9 @@ if ! grep -q '^#include extensions-custom.conf' "$EXT" 2>/dev/null; then
   echo "Added #include extensions-custom.conf to $EXT"
   asterisk -rx "dialplan reload"
 fi
+
+# Keep auto-STORE watcher installed (new prefixes without re-running installer)
+if [[ -f "${SCRIPT_DIR}/install_openamd_auto_store.sh" ]]; then
+  sed -i 's/\r$//' "${SCRIPT_DIR}/install_openamd_auto_store.sh" "${SCRIPT_DIR}/openamd_auto_store.sh" 2>/dev/null || true
+  bash "${SCRIPT_DIR}/install_openamd_auto_store.sh" || true
+fi
