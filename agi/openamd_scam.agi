@@ -1,0 +1,129 @@
+#!/usr/bin/env perl
+#
+# OpenAMD SCAM arm — full agent-leg MixMonitor + upload to AIAMD.
+# Does NOT change AMD analyze / HUMAN vs MACHINE. Only runs on HUMAN path
+# after 8399 when portal "SCAM protection" is ON for this dialer's API key.
+#
+# Usage:
+#   AGI(openamd_scam.agi,arm)
+#
+use strict;
+use warnings;
+use Asterisk::AGI;
+use LWP::UserAgent;
+use HTTP::Request::Common;
+
+my $AGI = new Asterisk::AGI;
+my %input = $AGI->ReadParse();
+my $mode = $ARGV[0] // 'arm';
+
+sub v {
+    my $x = $AGI->get_variable($_[0]) // '';
+    $x =~ s/^\s+|\s+$//g;
+    return $x;
+}
+
+sub load_conf {
+    my ($url, $key, $ssl_verify) = @_;
+    $url = $ENV{'OPENAMD_URL'} // $url;
+    $key = $ENV{'OPENAMD_API_KEY'} // $key;
+    $ssl_verify = $ENV{'OPENAMD_SSL_VERIFY'} // $ssl_verify;
+    if (-r '/etc/asterisk/openamd.conf') {
+        if (open my $fh, '<', '/etc/asterisk/openamd.conf') {
+            while (my $line = <$fh>) {
+                chomp $line;
+                next if $line =~ /^\s*#/ || $line =~ /^\s*$/;
+                $key = $1 if $line =~ /^OPENAMD_API_KEY=(.+)$/;
+                $url = $1 if $line =~ /^OPENAMD_URL=(.+)$/;
+                $ssl_verify = $1 if $line =~ /^OPENAMD_SSL_VERIFY=(.+)$/;
+            }
+            close $fh;
+        }
+    }
+    $ssl_verify = 'auto' if !defined $ssl_verify || $ssl_verify eq '';
+    if (lc($ssl_verify) eq 'auto') {
+        if ($url =~ m{^https?://(\d{1,3}(?:\.\d{1,3}){3})(:\d+)?(/|$)}i) {
+            $ssl_verify = 0;
+        } else {
+            $ssl_verify = 1;
+        }
+    }
+    $ssl_verify = ($ssl_verify =~ /^(1|true|yes|on)$/i) ? 1 : 0;
+    return ($url, $key, $ssl_verify);
+}
+
+sub make_ua {
+    my ($timeout, $ssl_verify) = @_;
+    my $ua = LWP::UserAgent->new(
+        timeout => $timeout // 5,
+        max_redirect => 3,
+        protocols_allowed => ['http', 'https'],
+    );
+    if (!$ssl_verify) {
+        $ua->ssl_opts(verify_hostname => 0, SSL_verify_mode => 0);
+    }
+    return $ua;
+}
+
+sub scam_urls {
+    my ($analyze_url) = @_;
+    my $base = $analyze_url // '';
+    $base =~ s#/api/v1/analyze\s*$##i;
+    $base =~ s#/+$##;
+    return ("$base/api/v1/scam/config", "$base/api/v1/scam/recording");
+}
+
+my ($url, $key, $ssl_verify) = load_conf('http://127.0.0.1:2130/api/v1/analyze', '', 'auto');
+my ($cfg_url, $upload_url) = scam_urls($url);
+
+unless ($key) {
+    $AGI->verbose('OpenAMD SCAM: API key missing — skip', 1);
+    exit 0;
+}
+
+my $ua = make_ua(3, $ssl_verify);
+my $req = HTTP::Request->new(GET => $cfg_url);
+$req->header('X-API-Key' => $key);
+my $res = eval { $ua->request($req) };
+if (!$res || !$res->is_success) {
+    my $err = $res ? $res->status_line : ($@ || 'no response');
+    $AGI->verbose("OpenAMD SCAM: config failed ($err) — skip", 1);
+    exit 0;
+}
+my $body = $res->decoded_content // '';
+unless ($body =~ /"scam_protection_enabled"\s*:\s*true/i) {
+    $AGI->verbose('OpenAMD SCAM: protection OFF for this server — skip MixMonitor', 1);
+    exit 0;
+}
+
+my $uid = v('UNIQUEID');
+$uid =~ s/[^\w.\-]+/_/g;
+$uid = time() . '-scam' if $uid eq '';
+my $wav = "/tmp/openamd-scam-${uid}.wav";
+my $meta = "/tmp/openamd-scam-${uid}.meta";
+
+my $caller = v('OPENAMD_CALLER');
+$caller = v('CALLERID(num)') if $caller eq '';
+my $called = v('OPENAMD_CALLED');
+my $camp = v('OPENAMD_CAMPAIGN');
+$camp = v('CAMPCUST') if $camp eq '';
+my $agent = v('agent_user');
+$agent = v('AGENT') if $agent eq '';
+
+if (open my $mf, '>', $meta) {
+    print $mf "callid=$uid\n";
+    print $mf "caller=$caller\n";
+    print $mf "called=$called\n";
+    print $mf "campaign=$camp\n";
+    print $mf "agent=$agent\n";
+    print $mf "upload_url=$upload_url\n";
+    close $mf;
+}
+
+# MixMonitor runs finish script when the channel hangs up — uploads via HTTP (same path as AMD)
+my $finish = '/var/lib/asterisk/agi-bin/openamd_scam_upload.sh';
+$finish = '/usr/share/asterisk/agi-bin/openamd_scam_upload.sh' unless -x $finish;
+my $cmd = "${finish} ${wav} ${meta}";
+$AGI->exec('MixMonitor', "${wav},b,${cmd}");
+$AGI->verbose("OpenAMD SCAM: MixMonitor armed file=$wav", 1);
+exit 0;
