@@ -25,7 +25,7 @@ That AGI:
 
 1. Asks AIAMD `GET /api/v1/scam/config` (portal **SCAM protection** flag on that VICIdial server).
 2. If **OFF** → no-op (AMD-only behavior).
-3. If **ON** → `MixMonitor` full agent call → on hangup, `openamd_scam_upload.sh` **HTTP POSTs** the WAV to `/api/v1/scam/recording` on port **2130** (same outbound path as AMD — not file sync).
+3. If **ON** → `MixMonitor` the agent call for **up to 2 minutes**, then stop recording (call continues). On stop/hangup, `openamd_scam_upload.sh` **HTTP POSTs** the WAV to `/api/v1/scam/recording` on port **2130** (same outbound path as AMD — not file sync).
 
 ## Portal setup
 

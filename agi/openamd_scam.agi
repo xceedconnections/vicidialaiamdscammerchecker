@@ -120,10 +120,22 @@ if (open my $mf, '>', $meta) {
     close $mf;
 }
 
-# MixMonitor runs finish script when the channel hangs up — uploads via HTTP (same path as AMD)
+# MixMonitor: record first 2 minutes of agent leg only (SCAM pitch window),
+# then StopMixMonitor so the finish script uploads via HTTP (same path as AMD).
 my $finish = '/var/lib/asterisk/agi-bin/openamd_scam_upload.sh';
 $finish = '/usr/share/asterisk/agi-bin/openamd_scam_upload.sh' unless -x $finish;
 my $cmd = "${finish} ${wav} ${meta}";
 $AGI->exec('MixMonitor', "${wav},b,${cmd}");
-$AGI->verbose("OpenAMD SCAM: MixMonitor armed file=$wav", 1);
+
+my $chan = $input{'channel'} // '';
+$chan =~ s/'//g;
+my $secs = 120;
+if ($chan ne '') {
+    # Stop after 2 minutes even if the call continues (does not hang up the call).
+    my $stop = qq{(sleep $secs; /usr/sbin/asterisk -rx "mixmonitor stop $chan" >/dev/null 2>&1) &};
+    system($stop);
+    $AGI->verbose("OpenAMD SCAM: MixMonitor armed file=$wav (max ${secs}s)", 1);
+} else {
+    $AGI->verbose("OpenAMD SCAM: MixMonitor armed file=$wav (no channel for timed stop)", 1);
+}
 exit 0;
