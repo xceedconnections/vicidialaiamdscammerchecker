@@ -183,9 +183,9 @@ exten => s,1,NoOp(OpenAMD detect lid=${CHANNEL(linkedid)})
  same => n,AGI(openamd.agi,ping)
  same => n,GotoIf($["${OPENAMD_STATUS}" = "UNAVAILABLE"]?fallback)
  same => n,GotoIf($["${OPENAMD_STATUS}" = "ERROR"]?fallback)
- same => n,Wait(0.3)
- ; Slightly longer window so silence is captured as audio (BLANK->MACHINE), not empty WAV->8369
- same => n,Record(${OPENAMD_FILE}:wav,3,4,q)
+ same => n,Wait(0.5)
+ ; Max 5s listen; stop after 2s of true silence. Short windows miss "call forwarded" VMs.
+ same => n,Record(${OPENAMD_FILE}:wav,5,2,q)
  same => n,AGI(openamd.agi,${OPENAMD_ID},${OPENAMD_CAMPAIGN},${OPENAMD_CALLER},${OPENAMD_CALLED})
  same => n,NoOp(OpenAMD status=${OPENAMD_STATUS} conf=${OPENAMD_CONFIDENCE})
  same => n,GotoIf($["${OPENAMD_STATUS}" = "HUMAN"]?human)
