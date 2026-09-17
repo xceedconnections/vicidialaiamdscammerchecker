@@ -179,9 +179,11 @@ exten => s,1,NoOp(OpenAMD detect lid=${CHANNEL(linkedid)})
  same => n,Set(OPENAMD_ID=${EPOCH}-${RAND(10000,99999)})
  same => n,Set(OPENAMD_FILE=/tmp/openamd-${OPENAMD_ID})
  same => n,NoOp(OpenAMD detect caller=${OPENAMD_CALLER} called=${OPENAMD_CALLED} camp=${OPENAMD_CAMPAIGN})
- ; CRITICAL: Record FIRST. Ping/Wait/Playback before Record misses live "Hello"
- ; and AIAMD hangs up the empty/VM-start clip — agents starve vs stock 8369.
- same => n,Record(${OPENAMD_FILE}:wav,5,2,q)
+ ; Record a FIXED 3s window. Silence-stop (3rd arg) MUST be 0.
+ ; Record(...,5,2) stopped after 2s of leading silence — delayed "Hello"
+ ; never made the WAV, AIAMD hung up as MACHINE, agents starved vs 8369.
+ same => n,Playback(sip-silence)
+ same => n,Record(${OPENAMD_FILE}:wav,3,0,q)
  same => n,AGI(openamd.agi,${OPENAMD_ID},${OPENAMD_CAMPAIGN},${OPENAMD_CALLER},${OPENAMD_CALLED})
  same => n,NoOp(OpenAMD status=${OPENAMD_STATUS} conf=${OPENAMD_CONFIDENCE})
  same => n,GotoIf($["${OPENAMD_STATUS}" = "HUMAN"]?human)
