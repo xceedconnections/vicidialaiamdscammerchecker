@@ -361,12 +361,14 @@ if (!$res) {
     my ($cf) = $b =~ /"confidence"\s*:\s*([0-9.]+)/;
     my ($ms) = $b =~ /"processing_ms"\s*:\s*([0-9]+)/;
     $st = $st // 'ERROR';
-    # Only HUMAN / MACHINE are actionable; anything else -> UNAVAILABLE for 8369
     if ($st eq 'HUMAN' || $st eq 'MACHINE') {
         $AGI->set_variable('OPENAMD_STATUS', $st);
         $AGI->set_variable('OPENAMD_CONFIDENCE', $cf // '0');
         $AGI->set_variable('OPENAMD_MS', $ms // '0');
         $AGI->verbose("OpenAMD OK $st caller=$outcid called=$lead", 1);
+    } elsif ($st eq 'BLANK') {
+        # Quiet / delayed answer — let stock 8369 keep listening (do not AA hangup)
+        set_fallback_8369('AIAMD BLANK/silence');
     } elsif ($wav_bytes < 200) {
         set_fallback_8369("blank wav + unexpected status=$st");
     } else {
