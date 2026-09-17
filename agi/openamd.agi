@@ -313,7 +313,7 @@ if ($wav_bytes < 200) {
     }
 }
 
-my $ua = make_ua(6, $ssl_verify);
+my $ua = make_ua(12, $ssl_verify);
 my $admitted = v('OPENAMD_ADMITTED');
 my $res = eval {
     $ua->request(
