@@ -179,12 +179,8 @@ exten => s,1,NoOp(OpenAMD detect lid=${CHANNEL(linkedid)})
  same => n,Set(OPENAMD_ID=${EPOCH}-${RAND(10000,99999)})
  same => n,Set(OPENAMD_FILE=/tmp/openamd-${OPENAMD_ID})
  same => n,NoOp(OpenAMD detect caller=${OPENAMD_CALLER} called=${OPENAMD_CALLED} camp=${OPENAMD_CAMPAIGN})
- ; Fast health ping — if AIAMD down, skip Record and use stock 8369
- same => n,AGI(openamd.agi,ping)
- same => n,GotoIf($["${OPENAMD_STATUS}" = "UNAVAILABLE"]?fallback)
- same => n,GotoIf($["${OPENAMD_STATUS}" = "ERROR"]?fallback)
- same => n,Wait(0.5)
- ; Max 5s listen; stop after 2s of true silence. Short windows miss "call forwarded" VMs.
+ ; CRITICAL: Record FIRST. Ping/Wait/Playback before Record misses live "Hello"
+ ; and AIAMD hangs up the empty/VM-start clip — agents starve vs stock 8369.
  same => n,Record(${OPENAMD_FILE}:wav,5,2,q)
  same => n,AGI(openamd.agi,${OPENAMD_ID},${OPENAMD_CAMPAIGN},${OPENAMD_CALLER},${OPENAMD_CALLED})
  same => n,NoOp(OpenAMD status=${OPENAMD_STATUS} conf=${OPENAMD_CONFIDENCE})
@@ -213,7 +209,6 @@ from pathlib import Path
 new8399 = '''
 ; --- OpenAMD exact 8399 (HUMAN -> agent, MACHINE -> hangup, FAIL -> 8369) ---
 exten => 8399,1,AGI(agi://127.0.0.1:4577/call_log)
-exten => 8399,n,Playback(sip-silence)
 exten => 8399,n,Gosub(openamd-detect,s,1(${CAMPCUST},))
 exten => 8399,n,NoOp(OpenAMD AMDSTATUS=${AMDSTATUS} AMDCAUSE=${AMDCAUSE})
 exten => 8399,n,GotoIf($["${AMDSTATUS}" = "HUMAN"]?openamd_human)

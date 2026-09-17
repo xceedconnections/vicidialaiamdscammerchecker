@@ -123,14 +123,24 @@ sub set_unavailable {
     $AGI->verbose("OpenAMD UNAVAILABLE: $why (dialplan should use stock AMD 8369)", 1);
 }
 
-# No usable audio = hang up as MACHINE (AA). Never fall through to 8369,
-# which can classify silence as HUMAN and send the call to an agent.
+# No usable audio = fall back to stock AMD 8369 (same as offline).
+# Previously we hung up as MACHINE — that starved agents when Record missed
+# a live hello (Playback/Wait delay) or captured only silence.
 sub set_machine {
     my ($why) = @_;
     $AGI->set_variable('OPENAMD_STATUS', 'MACHINE');
     $AGI->set_variable('OPENAMD_CONFIDENCE', '0.99');
     $AGI->set_variable('OPENAMD_MS', '0');
-    $AGI->verbose("OpenAMD MACHINE (blank/silent): $why", 1);
+    $AGI->verbose("OpenAMD MACHINE: $why", 1);
+}
+
+sub set_fallback_8369 {
+    my ($why) = @_;
+    $AGI->set_variable('OPENAMD_STATUS', 'UNAVAILABLE');
+    $AGI->set_variable('OPENAMD_CONFIDENCE', '0');
+    $AGI->set_variable('OPENAMD_MS', '0');
+    $AGI->set_variable('OPENAMD_ADMITTED', '0');
+    $AGI->verbose("OpenAMD FALLBACK 8369: $why", 1);
 }
 
 my ($url, $key, $ssl_verify) = load_conf('http://127.0.0.1/api/v1/analyze', '', 'auto');
@@ -284,16 +294,17 @@ unless ($key) {
     exit 0;
 }
 unless (-f $wav) {
-    # No recording = no voice — hang up as MACHINE (do not use 8369 → agent)
-    set_machine("wav missing $wav");
+    # Missed Record (timing) — use stock 8369 instead of hanging up everyone
+    set_fallback_8369("wav missing $wav");
     exit 0;
 }
 my $wav_bytes = -s $wav;
 $wav_bytes = 0 unless defined $wav_bytes;
 if ($wav_bytes < 200) {
-    # Header-only / empty capture — still POST so portal CDR shows BLANK;
-    # if API is old/unreachable, hang up as MACHINE locally.
-    $AGI->verbose("OpenAMD blank wav ${wav_bytes} bytes - analyzing as silence", 1);
+    # Empty capture — stock AMD is safer than auto-hangup (agents were starving)
+    set_fallback_8369("blank wav ${wav_bytes} bytes");
+    unlink $wav if -f $wav;
+    exit 0;
 }
 
 # Quick re-check before spending analyze time (server may have gone down mid-call)
@@ -303,7 +314,7 @@ if ($wav_bytes < 200) {
     if (!$hr || !$hr->is_success) {
         my $err = $hr ? $hr->status_line : ($@ || 'no response');
         if ($wav_bytes < 200) {
-            set_machine("blank wav + health failed: $err");
+            set_fallback_8369("blank wav + health failed: $err");
             unlink $wav if -f $wav;
             exit 0;
         }
@@ -335,15 +346,15 @@ my $res = eval {
 
 if (!$res) {
     if ($wav_bytes < 200) {
-        set_machine('blank wav + analyze exception: ' . ($@ || 'unknown'));
+        set_fallback_8369('blank wav + analyze exception: ' . ($@ || 'unknown'));
     } else {
         set_unavailable('analyze request exception: ' . ($@ || 'unknown'));
     }
 } elsif ($res->code == 429) {
     set_unavailable('CPS limit exceeded on analyze - using stock AMD 8369');
 } elsif ($res->code == 400) {
-    # Legacy API: empty audio was HTTP 400. Treat as blank -> MACHINE hangup.
-    set_machine('HTTP 400 empty/blank audio - not sending to agent');
+    # Empty/bad audio — stock 8369, do not auto-hangup
+    set_fallback_8369('HTTP 400 empty/blank audio');
 } elsif ($res->is_success) {
     my $b = $res->decoded_content;
     my ($st) = $b =~ /"status"\s*:\s*"([^"]+)"/;
@@ -357,13 +368,13 @@ if (!$res) {
         $AGI->set_variable('OPENAMD_MS', $ms // '0');
         $AGI->verbose("OpenAMD OK $st caller=$outcid called=$lead", 1);
     } elsif ($wav_bytes < 200) {
-        set_machine("blank wav + unexpected status=$st");
+        set_fallback_8369("blank wav + unexpected status=$st");
     } else {
         set_unavailable("unexpected analyze status=$st");
     }
 } else {
     if ($wav_bytes < 200) {
-        set_machine('blank wav + HTTP ' . $res->status_line);
+        set_fallback_8369('blank wav + HTTP ' . $res->status_line);
     } else {
         set_unavailable('HTTP ' . $res->status_line);
     }
