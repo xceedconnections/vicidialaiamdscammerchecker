@@ -229,13 +229,21 @@ exten => 8399,n,Goto(default,8369,1)
 '''
 
 def strip_8399(text: str) -> str:
+    """Remove OpenAMD 8399 and any leftover exact 138399 Local-hold blocks."""
     lines = text.splitlines(True)
     out = []
     for line in lines:
         s = line.strip()
         if s.startswith('; --- OpenAMD exact 8399'):
             continue
+        if s.startswith('; --- OpenAMD local-optimize'):
+            continue
+        # Orphan comments from later NA/VoIP experiments
+        if '138399' in s and s.startswith(';'):
+            continue
         if re.match(r'exten\s*=>\s*8399\b', s):
+            continue
+        if re.match(r'exten\s*=>\s*138399\b', s):
             continue
         out.append(line)
     return ''.join(out)
@@ -279,7 +287,7 @@ def inject_8399_in_default(text: str) -> str:
 # extensions.conf — primary home for 8399
 p = Path('/etc/asterisk/extensions.conf')
 p.write_text(inject_8399_in_default(p.read_text(encoding='utf-8', errors='replace')), encoding='utf-8')
-print('Wrote exact extension 8399 in extensions.conf (failover -> 8369)')
+print('Wrote exact extension 8399; stripped leftover 138399 Local-hold if any')
 
 # Remove conflicting 8399 from other Asterisk includes (keep OpenAMD one only)
 for other in ('/etc/asterisk/extensions-vicidial.conf', '/etc/asterisk/extensions-custom.conf'):
@@ -319,6 +327,15 @@ asterisk -rx "dialplan reload"
 
 echo ""
 asterisk -rx "dialplan show openamd-detect" | head -25
+echo ""
+echo "=== 8399 (OpenAMD) ==="
+asterisk -rx "dialplan show 8399@default" | head -18
+echo ""
+echo "=== 138399 (must be ONLY stock _1383XX Wait(2) — no exact Wait(14400)) ==="
+asterisk -rx "dialplan show 138399@default" | head -10
+echo ""
+echo "=== 8369 (stock AMD — unchanged) ==="
+asterisk -rx "dialplan show 8369@default" | head -10
 
 echo ""
 echo "DONE."
