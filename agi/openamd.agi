@@ -284,15 +284,20 @@ unless ($key) {
     exit 0;
 }
 unless (-f $wav) {
-    # No recording = no voice — hang up as MACHINE (do not use 8369 → agent)
-    set_machine("wav missing $wav");
-    exit 0;
+    # No recording — still ask the portal (blank checkbox: AA vs HUMAN→agent).
+    # Local MACHINE hangup ignored the portal setting.
+    if (open my $fh, '>', $wav) {
+        close $fh;
+        $AGI->verbose("OpenAMD wav missing - posting empty for blank policy", 1);
+    } else {
+        set_unavailable("wav missing and cannot create blank $wav");
+        exit 0;
+    }
 }
 my $wav_bytes = -s $wav;
 $wav_bytes = 0 unless defined $wav_bytes;
 if ($wav_bytes < 200) {
-    # Header-only / empty capture — still POST so portal CDR shows BLANK;
-    # if API is old/unreachable, hang up as MACHINE locally.
+    # Header-only / empty capture — POST so portal blank checkbox decides
     $AGI->verbose("OpenAMD blank wav ${wav_bytes} bytes - analyzing as silence", 1);
 }
 
@@ -303,7 +308,8 @@ if ($wav_bytes < 200) {
     if (!$hr || !$hr->is_success) {
         my $err = $hr ? $hr->status_line : ($@ || 'no response');
         if ($wav_bytes < 200) {
-            set_machine("blank wav + health failed: $err");
+            # Portal unreachable — do not hard-hang as MACHINE (blank may be HUMAN)
+            set_unavailable("blank wav + health failed: $err");
             unlink $wav if -f $wav;
             exit 0;
         }
@@ -335,15 +341,15 @@ my $res = eval {
 
 if (!$res) {
     if ($wav_bytes < 200) {
-        set_machine('blank wav + analyze exception: ' . ($@ || 'unknown'));
+        set_unavailable('blank wav + analyze exception: ' . ($@ || 'unknown'));
     } else {
         set_unavailable('analyze request exception: ' . ($@ || 'unknown'));
     }
 } elsif ($res->code == 429) {
     set_unavailable('CPS limit exceeded on analyze - using stock AMD 8369');
 } elsif ($res->code == 400) {
-    # Legacy API: empty audio was HTTP 400. Treat as blank -> MACHINE hangup.
-    set_machine('HTTP 400 empty/blank audio - not sending to agent');
+    # Legacy API empty audio. Prefer stock AMD over hard AA hangup.
+    set_unavailable('HTTP 400 empty/blank audio - stock AMD 8369');
 } elsif ($res->is_success) {
     my $b = $res->decoded_content;
     my ($st) = $b =~ /"status"\s*:\s*"([^"]+)"/;
@@ -357,13 +363,13 @@ if (!$res) {
         $AGI->set_variable('OPENAMD_MS', $ms // '0');
         $AGI->verbose("OpenAMD OK $st caller=$outcid called=$lead", 1);
     } elsif ($wav_bytes < 200) {
-        set_machine("blank wav + unexpected status=$st");
+        set_unavailable("blank wav + unexpected status=$st");
     } else {
         set_unavailable("unexpected analyze status=$st");
     }
 } else {
     if ($wav_bytes < 200) {
-        set_machine('blank wav + HTTP ' . $res->status_line);
+        set_unavailable('blank wav + HTTP ' . $res->status_line);
     } else {
         set_unavailable('HTTP ' . $res->status_line);
     }
