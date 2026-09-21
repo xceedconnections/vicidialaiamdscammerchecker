@@ -319,6 +319,9 @@ if ($wav_bytes < 200) {
     }
 }
 
+my $amdstatus = v('AMDSTATUS');
+my $amdcause  = v('AMDCAUSE');
+
 my $ua = make_ua(6, $ssl_verify);
 my $admitted = v('OPENAMD_ADMITTED');
 my $res = eval {
@@ -326,12 +329,14 @@ my $res = eval {
         POST $url,
         Content_Type => 'form-data',
         Content => [
-            callid   => $callid,
-            campaign => $camp,
-            caller   => $outcid,
-            called   => $lead,
-            ani      => $lead,
-            audio    => [$wav, "openamd-${callid}.wav", 'Content-Type' => 'audio/wav'],
+            callid    => $callid,
+            campaign  => $camp,
+            caller    => $outcid,
+            called    => $lead,
+            ani       => $lead,
+            amdstatus => $amdstatus,
+            amdcause  => $amdcause,
+            audio     => [$wav, "openamd-${callid}.wav", 'Content-Type' => 'audio/wav'],
         ],
         'X-API-Key' => $key,
         # Only skip a second CPS slot when ping already called /admit successfully
