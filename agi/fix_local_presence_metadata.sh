@@ -184,8 +184,9 @@ exten => s,1,NoOp(OpenAMD detect lid=${CHANNEL(linkedid)})
  same => n,GotoIf($["${OPENAMD_STATUS}" = "UNAVAILABLE"]?fallback)
  same => n,GotoIf($["${OPENAMD_STATUS}" = "ERROR"]?fallback)
  same => n,Wait(0.5)
- ; Max 5s listen; stop after 2s of true silence. Short windows miss "call forwarded" VMs.
- same => n,Record(${OPENAMD_FILE}:wav,5,2,q)
+ ; Asterisk Record(file,silence,maxduration,opts): stop after 3s silence, never longer than 5s.
+ ; Old 5,2 was max 2s, so Whisper only heard the start of Vodafone/VM greetings.
+ same => n,Record(${OPENAMD_FILE}:wav,3,5,q)
  same => n,AGI(openamd.agi,${OPENAMD_ID},${OPENAMD_CAMPAIGN},${OPENAMD_CALLER},${OPENAMD_CALLED})
  same => n,NoOp(OpenAMD status=${OPENAMD_STATUS} conf=${OPENAMD_CONFIDENCE})
  same => n,GotoIf($["${OPENAMD_STATUS}" = "HUMAN"]?human)
