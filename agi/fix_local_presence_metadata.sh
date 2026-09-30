@@ -179,11 +179,14 @@ exten => s,1,NoOp(OpenAMD detect lid=${CHANNEL(linkedid)})
  same => n,Set(OPENAMD_ID=${EPOCH}-${RAND(10000,99999)})
  same => n,Set(OPENAMD_FILE=/tmp/openamd-${OPENAMD_ID})
  same => n,NoOp(OpenAMD detect caller=${OPENAMD_CALLER} called=${OPENAMD_CALLED} camp=${OPENAMD_CAMPAIGN})
- ; Fast health ping — if AIAMD down, skip Record and use stock 8369
+ ; Fast admit ping. Only an over-CPS answer skips Record; every other call is
+ ; recorded and POSTed so it is visible in the AIAMD portal.
  same => n,AGI(openamd.agi,ping)
- same => n,GotoIf($["${OPENAMD_STATUS}" = "UNAVAILABLE"]?fallback)
- same => n,GotoIf($["${OPENAMD_STATUS}" = "ERROR"]?fallback)
- same => n,Wait(0.5)
+ same => n,GotoIf($["${OPENAMD_PING}" = "CPS"]?fallback)
+ ; Answer + short settle so carrier RTP is flowing before Record starts.
+ ; Recording before media arrives was the main cause of silent/blank clips.
+ same => n,Answer()
+ same => n,Wait(0.3)
  ; Record(file,silence,maxduration): silence must be ABOVE maxduration or a pause
  ; before "hello" ends the file early and the portal marks it BLANK.
  ; 8,5 = always keep 5 seconds (VM greeting + delayed hello).

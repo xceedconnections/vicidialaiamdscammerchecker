@@ -115,11 +115,14 @@ sub admit_url_from {
 }
 
 sub set_unavailable {
-    my ($why) = @_;
+    my ($why, $kind) = @_;
     $AGI->set_variable('OPENAMD_STATUS', 'UNAVAILABLE');
     $AGI->set_variable('OPENAMD_CONFIDENCE', '0');
     $AGI->set_variable('OPENAMD_MS', '0');
     $AGI->set_variable('OPENAMD_ADMITTED', '0');
+    # CPS = over per-second limit (skip Record, go straight to 8369)
+    # DOWN = portal unreachable (still Record + POST so the call is logged)
+    $AGI->set_variable('OPENAMD_PING', ($kind || 'DOWN'));
     $AGI->verbose("OpenAMD UNAVAILABLE: $why (dialplan should use stock AMD 8369)", 1);
 }
 
@@ -146,6 +149,7 @@ if ($callid eq 'ping' || $callid eq '--ping--') {
     $AGI->set_variable('OPENAMD_CONFIDENCE', '0');
     $AGI->set_variable('OPENAMD_MS', '0');
     $AGI->set_variable('OPENAMD_ADMITTED', '0');
+    $AGI->set_variable('OPENAMD_PING', 'DOWN');
 
     unless ($key) {
         set_unavailable('API key missing');
@@ -165,7 +169,7 @@ if ($callid eq 'ping' || $callid eq '--ping--') {
         exit 0;
     }
     if ($res->code == 429) {
-        set_unavailable('CPS limit exceeded — using stock AMD 8369');
+        set_unavailable('CPS limit exceeded — using stock AMD 8369', 'CPS');
         exit 0;
     }
     if (!$res->is_success) {
@@ -184,6 +188,7 @@ if ($callid eq 'ping' || $callid eq '--ping--') {
     }
     $AGI->set_variable('OPENAMD_STATUS', 'OK');
     $AGI->set_variable('OPENAMD_ADMITTED', '1');
+    $AGI->set_variable('OPENAMD_PING', 'OK');
     $AGI->verbose("OpenAMD admit OK ($admit)", 1);
     exit 0;
 }
