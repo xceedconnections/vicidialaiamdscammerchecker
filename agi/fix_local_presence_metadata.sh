@@ -186,7 +186,7 @@ exten => s,1,NoOp(OpenAMD detect lid=${CHANNEL(linkedid)})
  ; Answer + short settle so carrier RTP is flowing before Record starts.
  ; Recording before media arrives was the main cause of silent/blank clips.
  same => n,Answer()
- same => n,Wait(0.3)
+ same => n,Wait(0.8)
  ; Record(file,silence,maxduration): silence must be ABOVE maxduration or a pause
  ; before "hello" ends the file early and the portal marks it BLANK.
  ; 8,5 = always keep 5 seconds (VM greeting + delayed hello).

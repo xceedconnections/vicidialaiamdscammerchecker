@@ -295,20 +295,16 @@ unless ($key) {
     exit 0;
 }
 unless (-f $wav) {
-    # No recording — still ask the portal (blank checkbox: AA vs HUMAN→agent).
-    # Local MACHINE hangup ignored the portal setting.
-    if (open my $fh, '>', $wav) {
-        close $fh;
-        $AGI->verbose("OpenAMD wav missing - posting empty for blank policy", 1);
-    } else {
-        set_unavailable("wav missing and cannot create blank $wav");
-        exit 0;
-    }
+    # Record never wrote a file (path fail / dialplan race) — use stock 8369.
+    # Do not invent an empty WAV; that floods the portal with fake "no audio" rows.
+    set_unavailable("wav missing after Record: $wav");
+    exit 0;
 }
 my $wav_bytes = -s $wav;
 $wav_bytes = 0 unless defined $wav_bytes;
 if ($wav_bytes < 200) {
-    # Header-only / empty capture — POST so portal blank checkbox decides
+    # Asterisk wrote a header-only / near-empty capture (hangup before RTP).
+    # Still POST so the portal blank checkbox decides AA vs agent.
     $AGI->verbose("OpenAMD blank wav ${wav_bytes} bytes - analyzing as silence", 1);
 }
 
