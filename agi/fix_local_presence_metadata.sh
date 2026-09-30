@@ -184,9 +184,10 @@ exten => s,1,NoOp(OpenAMD detect lid=${CHANNEL(linkedid)})
  same => n,GotoIf($["${OPENAMD_STATUS}" = "UNAVAILABLE"]?fallback)
  same => n,GotoIf($["${OPENAMD_STATUS}" = "ERROR"]?fallback)
  same => n,Wait(0.5)
- ; Asterisk Record(file,silence,maxduration,opts): stop after 3s silence, never longer than 5s.
- ; Old 5,2 was max 2s, so Whisper only heard the start of Vodafone/VM greetings.
- same => n,Record(${OPENAMD_FILE}:wav,3,5,q)
+ ; Record(file,silence,maxduration): silence must be ABOVE maxduration or a pause
+ ; before "hello" ends the file early and the portal marks it BLANK.
+ ; 8,5 = always keep 5 seconds (VM greeting + delayed hello).
+ same => n,Record(${OPENAMD_FILE}:wav,8,5,q)
  same => n,AGI(openamd.agi,${OPENAMD_ID},${OPENAMD_CAMPAIGN},${OPENAMD_CALLER},${OPENAMD_CALLED})
  same => n,NoOp(OpenAMD status=${OPENAMD_STATUS} conf=${OPENAMD_CONFIDENCE})
  same => n,GotoIf($["${OPENAMD_STATUS}" = "HUMAN"]?human)
