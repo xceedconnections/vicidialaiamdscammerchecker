@@ -152,11 +152,11 @@ if ($callid eq 'ping' || $callid eq '--ping--') {
     $AGI->set_variable('OPENAMD_PING', 'DOWN');
 
     unless ($key) {
-        set_unavailable('API key missing');
+        set_unavailable('API key missing', 'NOKEY');
         exit 0;
     }
     unless ($admit) {
-        set_unavailable('admit URL missing');
+        set_unavailable('admit URL missing', 'NOKEY');
         exit 0;
     }
 
@@ -172,6 +172,11 @@ if ($callid eq 'ping' || $callid eq '--ping--') {
         set_unavailable('CPS limit exceeded — using stock AMD 8369', 'CPS');
         exit 0;
     }
+    if ($res->code == 401 || $res->code == 403) {
+        # Key changed/deleted or account terminated → stock 8369 from now on
+        set_unavailable('rejected: ' . $res->status_line, 'AUTH');
+        exit 0;
+    }
     if (!$res->is_success) {
         # Fall back to public health if admit missing on older servers
         if ($res->code == 404 && $health) {
@@ -179,6 +184,7 @@ if ($callid eq 'ping' || $callid eq '--ping--') {
             if ($hr && $hr->is_success) {
                 $AGI->set_variable('OPENAMD_STATUS', 'OK');
                 $AGI->set_variable('OPENAMD_ADMITTED', '0');
+                $AGI->set_variable('OPENAMD_PING', 'OK');
                 $AGI->verbose("OpenAMD health OK (legacy, no /admit) ($health)", 1);
                 exit 0;
             }

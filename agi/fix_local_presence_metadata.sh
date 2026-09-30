@@ -179,10 +179,10 @@ exten => s,1,NoOp(OpenAMD detect lid=${CHANNEL(linkedid)})
  same => n,Set(OPENAMD_ID=${EPOCH}-${RAND(10000,99999)})
  same => n,Set(OPENAMD_FILE=/tmp/openamd-${OPENAMD_ID})
  same => n,NoOp(OpenAMD detect caller=${OPENAMD_CALLER} called=${OPENAMD_CALLED} camp=${OPENAMD_CAMPAIGN})
- ; Fast admit ping. Only an over-CPS answer skips Record; every other call is
- ; recorded and POSTed so it is visible in the AIAMD portal.
+ ; Fast admit ping (~2ms on the local network).
+ ; OK -> record + portal. DOWN/AUTH/NOKEY/CPS -> stock AMD 8369, no dead air.
  same => n,AGI(openamd.agi,ping)
- same => n,GotoIf($["${OPENAMD_PING}" = "CPS"]?fallback)
+ same => n,GotoIf($["${OPENAMD_PING}" != "OK"]?fallback)
  ; Answer + short settle so carrier RTP is flowing before Record starts.
  ; Recording before media arrives was the main cause of silent/blank clips.
  same => n,Answer()
@@ -203,7 +203,8 @@ exten => s,1,NoOp(OpenAMD detect lid=${CHANNEL(linkedid)})
  same => n,Set(AMDCAUSE=MACHINE)
  same => n,Return()
  same => n(fallback),Set(AMDSTATUS=FALLBACK)
- same => n,Set(AMDCAUSE=OPENAMD_UNAVAILABLE)
+ same => n,Set(AMDCAUSE=OPENAMD_${IF($["${OPENAMD_PING}"!=""]?${OPENAMD_PING}:UNAVAILABLE)})
+ same => n,NoOp(OpenAMD fallback to stock 8369 reason=${AMDCAUSE})
  same => n,Return()
 '''
 
