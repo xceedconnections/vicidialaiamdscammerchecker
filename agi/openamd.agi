@@ -8,8 +8,8 @@
 #                   AstDB (stored at dial time) or reverse dialplan lookup
 #
 # Failover:
-#   OPENAMD_STATUS=UNAVAILABLE / ERROR  -> dialplan must Goto stock AMD 8369
-#   (never treat as HUMAN — that bypasses AIAMD with no SQL/recording)
+#   OPENAMD_STATUS=UNAVAILABLE / ERROR / FALLBACK -> dialplan on hybrid 8399
+#   uses 8389-style AA hangup (NOT Goto 8369). Never treat as HUMAN.
 #
 # Modes:
 #   AGI(openamd.agi,ping)  — fast health check only (no WAV required)
@@ -37,7 +37,7 @@ sub v {
 sub phone {
     my ($n) = @_;
     return 0 if !defined $n || $n eq '';
-    return 0 if $n =~ /^(s|h|8399|8369|8368|unknown|anonymous)$/i;
+    return 0 if $n =~ /^(s|h|8399|8389|8369|8368|unknown|anonymous)$/i;
     return $n =~ /^\d{7,15}$/;
 }
 
@@ -120,13 +120,13 @@ sub set_unavailable {
     $AGI->set_variable('OPENAMD_CONFIDENCE', '0');
     $AGI->set_variable('OPENAMD_MS', '0');
     $AGI->set_variable('OPENAMD_ADMITTED', '0');
-    # CPS = over per-second limit (skip Record, go straight to 8369)
+    # CPS = over per-second limit (skip Record; hybrid 8399 -> 8389 hangup)
     # DOWN = portal unreachable (still Record + POST so the call is logged)
     $AGI->set_variable('OPENAMD_PING', ($kind || 'DOWN'));
-    $AGI->verbose("OpenAMD UNAVAILABLE: $why (dialplan should use stock AMD 8369)", 1);
+    $AGI->verbose("OpenAMD UNAVAILABLE: $why (hybrid 8399 dialplan uses 8389-style hangup)", 1);
 }
 
-# No usable audio = hang up as MACHINE (AA). Never fall through to 8369,
+# No usable audio = hang up as MACHINE (AA). Never fall through to stock 8369,
 # which can classify silence as HUMAN and send the call to an agent.
 sub set_machine {
     my ($why) = @_;
@@ -141,8 +141,9 @@ my $health = health_url_from($url);
 my $admit  = admit_url_from($url);
 
 # ------------------------------------------------------------------
-# Ping / admit mode (before Record) — fail fast to 8369
+# Ping / admit mode (before Record) — fail fast to FALLBACK
 # Checks online + per-server CPS limit. Over CPS = same as offline.
+# Hybrid 8399 dialplan hangs up 8389-style (not Goto 8369).
 # ------------------------------------------------------------------
 if ($callid eq 'ping' || $callid eq '--ping--') {
     $AGI->set_variable('OPENAMD_STATUS', 'UNAVAILABLE');
@@ -169,11 +170,11 @@ if ($callid eq 'ping' || $callid eq '--ping--') {
         exit 0;
     }
     if ($res->code == 429) {
-        set_unavailable('CPS limit exceeded — using stock AMD 8369', 'CPS');
+        set_unavailable('CPS limit exceeded — hybrid 8399 uses 8389-style hangup', 'CPS');
         exit 0;
     }
     if ($res->code == 401 || $res->code == 403) {
-        # Key changed/deleted or account terminated → stock 8369 from now on
+        # Key changed/deleted or account terminated → FALLBACK (8389 hangup on 8399)
         set_unavailable('rejected: ' . $res->status_line, 'AUTH');
         exit 0;
     }
@@ -295,7 +296,7 @@ unless ($key) {
     exit 0;
 }
 unless (-f $wav) {
-    # Record never wrote a file (path fail / dialplan race) — use stock 8369.
+    # Record never wrote a file (path fail / dialplan race) — FALLBACK (8389 hangup).
     # Do not invent an empty WAV; that floods the portal with fake "no audio" rows.
     set_unavailable("wav missing after Record: $wav");
     exit 0;
@@ -358,17 +359,17 @@ if (!$res) {
         set_unavailable('analyze request exception: ' . ($@ || 'unknown'));
     }
 } elsif ($res->code == 429) {
-    set_unavailable('CPS limit exceeded on analyze - using stock AMD 8369');
+    set_unavailable('CPS limit exceeded on analyze - hybrid 8399 uses 8389-style hangup');
 } elsif ($res->code == 400) {
-    # Legacy API empty audio. Prefer stock AMD over hard AA hangup.
-    set_unavailable('HTTP 400 empty/blank audio - stock AMD 8369');
+    # Legacy API empty audio. Prefer FALLBACK (8389 hangup) over inventing HUMAN.
+    set_unavailable('HTTP 400 empty/blank audio - FALLBACK 8389-style hangup');
 } elsif ($res->is_success) {
     my $b = $res->decoded_content;
     my ($st) = $b =~ /"status"\s*:\s*"([^"]+)"/;
     my ($cf) = $b =~ /"confidence"\s*:\s*([0-9.]+)/;
     my ($ms) = $b =~ /"processing_ms"\s*:\s*([0-9]+)/;
     $st = $st // 'ERROR';
-    # Only HUMAN / MACHINE are actionable; anything else -> UNAVAILABLE for 8369
+    # Only HUMAN / MACHINE are actionable; anything else -> UNAVAILABLE/FALLBACK (8389 hangup)
     if ($st eq 'HUMAN' || $st eq 'MACHINE') {
         $AGI->set_variable('OPENAMD_STATUS', $st);
         $AGI->set_variable('OPENAMD_CONFIDENCE', $cf // '0');

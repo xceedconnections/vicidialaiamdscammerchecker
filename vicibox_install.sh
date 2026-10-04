@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Install OpenAMD on ViciBox (AGI + extension 8399 + Caller ID / Called Number)
+# Install OpenAMD on ViciBox (AGI + extensions 8389/8399 + Caller ID / Called Number)
 #
 # Usage (first arg = AI AMD base — IP, domain, or full URL):
 #   bash vicibox_install.sh http://aiamd.xceedconnections.com oam_xxxxxxxx
@@ -13,14 +13,18 @@
 #   2) Installs openamd.agi (local-presence aware, http+https)
 #   3) Runs restore_vicidial_dialplan.sh — cleans broken Dial B()/openamd-capture
 #   4) Runs fix_caller_called.sh (fix_local_presence_metadata.sh) which:
-#        - Installs exact extension 8399 + [openamd-detect]
-#          HUMAN -> agent | MACHINE -> hangup | AIAMD down -> stock AMD 8369
+#        - Installs VD_amd_human_only.agi (never overwrites system VD_amd.agi)
+#        - Installs AMD routing extensions:
+#            8369 = stock Vicidial AMD (untouched)
+#            8389 = human-only (stock AMD; only HUMAN/PERSON → agent; else AA)
+#            8399 = hybrid (stock AMD HUMAN → agent; else AIAMD;
+#                   AIAMD down/CPS/FALLBACK → 8389-style hangup, NOT Goto 8369)
 #        - Stores Caller ID + Called Number at dial time into AstDB for
 #          ANY VICIdial dial prefix (_8. _9. _87899. _94455. _94556. _6. etc.)
 #          Lead comes from Dial() ${EXTEN:N} when present.
 #   5) Does NOT modify Dial() destinations or add B(openamd-capture)
 #
-# After install: set VICIdial campaign AMD / routing extension to 8399
+# After install: set VICIdial campaign AMD / routing extension to 8389 or 8399
 #
 
 set -euo pipefail
@@ -253,9 +257,9 @@ sed -i 's/\r$//' "${RESTORE_SRC}"
 # OPENAMD_FROM_INSTALL=1 skips the "set AMD to 8369" tip (we install 8399 next)
 OPENAMD_FROM_INSTALL=1 bash "${RESTORE_SRC}"
 
-echo "[5/6] Installing 8399 + Caller ID / Called Number (any campaign/carrier prefix)..."
+echo "[5/6] Installing 8389/8399 + Caller ID / Called Number (any campaign/carrier prefix)..."
 # This is the same path as: bash fix_caller_called.sh
-# -> agi/fix_local_presence_metadata.sh (AstDB STORE + openamd-detect + exact 8399)
+# -> agi/fix_local_presence_metadata.sh (AstDB STORE + openamd-detect + 8389/8399)
 sed -i 's/\r$//' "${FIX_CALLER_SRC}"
 OPENAMD_FROM_INSTALL=1 bash "${FIX_CALLER_SRC}"
 
@@ -279,8 +283,14 @@ echo ""
 echo "=== extensions-custom include ==="
 grep extensions-custom "${EXT}" || true
 echo ""
-echo "=== 8399 ==="
-asterisk -rx "dialplan show 8399@default" | head -20 || true
+echo "=== 8369 (stock — unchanged) ==="
+asterisk -rx "dialplan show 8369@default" | head -12 || true
+echo ""
+echo "=== 8389 (human-only) ==="
+asterisk -rx "dialplan show 8389@default" | head -14 || true
+echo ""
+echo "=== 8399 (hybrid) ==="
+asterisk -rx "dialplan show 8399@default" | head -22 || true
 echo ""
 echo "=== openamd-detect ==="
 asterisk -rx "dialplan show openamd-detect" | head -25 || true
@@ -295,7 +305,7 @@ else
   echo "(clean)"
 fi
 
-# Hard-fail if 8399 or STORE did not land (so install is never "half done")
+# Hard-fail if 8389/8399 or STORE did not land (so install is never "half done")
 # Capture dialplan output first — do NOT pipe asterisk|grep under pipefail
 # (asterisk often exits non-zero and falsely trips the check).
 OAMD_DP="$(asterisk -rx "dialplan show openamd-detect" 2>/dev/null || true)"
@@ -305,11 +315,28 @@ if ! echo "$OAMD_DP" | grep -q "Context 'openamd-detect'"; then
   echo "     asterisk -rx \"dialplan show openamd-detect\" | head"
   exit 1
 fi
+OAMD_8389="$(asterisk -rx "dialplan show 8389@default" 2>/dev/null || true)"
+if ! echo "$OAMD_8389" | grep -q 'VD_amd_human_only'; then
+  echo "ERROR: extension 8389 / VD_amd_human_only missing after install."
+  echo "---- dialplan show 8389@default (first 25 lines) ----"
+  echo "$OAMD_8389" | head -25
+  exit 1
+fi
 OAMD_8399="$(asterisk -rx "dialplan show 8399@default" 2>/dev/null || true)"
 if ! echo "$OAMD_8399" | grep -q 'openamd-detect'; then
   echo "ERROR: extension 8399 / openamd-detect missing after install."
   echo "---- dialplan show 8399@default (first 25 lines) ----"
   echo "$OAMD_8399" | head -25
+  exit 1
+fi
+if ! echo "$OAMD_8399" | grep -q 'AMD'; then
+  echo "ERROR: extension 8399 missing stock AMD() step after install."
+  echo "---- dialplan show 8399@default (first 25 lines) ----"
+  echo "$OAMD_8399" | head -25
+  exit 1
+fi
+if [[ ! -f /usr/share/asterisk/agi-bin/VD_amd_human_only.agi && ! -f /var/lib/asterisk/agi-bin/VD_amd_human_only.agi ]]; then
+  echo "ERROR: VD_amd_human_only.agi not installed (and system VD_amd.agi must remain untouched)."
   exit 1
 fi
 if [[ -f "${VICI}" ]] && ! grep -q 'DB(openamd/${CHANNEL(linkedid)}/outcid)' "${VICI}" \
@@ -341,19 +368,22 @@ echo ""
 echo "==========================================="
 echo " ViciBox OpenAMD install complete"
 echo "==========================================="
-echo " Set VICIdial campaign AMD extension to: 8399"
-echo " AGI : ${AGI1}/openamd.agi"
+echo " Campaign AMD / routing extensions:"
+echo "   8369 = stock Vicidial AMD (untouched)"
+echo "   8389 = human-only (stock AMD; HUMAN/PERSON → agent; else AA hangup)"
+echo "   8399 = hybrid (stock HUMAN → agent; else AIAMD; AIAMD down → 8389 hangup)"
+echo " AGI : ${AGI1}/openamd.agi + ${AGI1}/VD_amd_human_only.agi"
 echo " URL : ${ANALYZE_URL}"
 echo " Conf: ${CONF}"
 echo ""
 echo " Included in this install (no extra scripts needed):"
 echo "   - restore_vicidial_dialplan.sh   (clean Dial / no openamd-capture)"
 echo "   - fix_caller_called.sh           (Caller ID + Called Number -> portal)"
-echo "   - fix_local_presence_metadata.sh (any dial prefix + exact 8399)"
+echo "   - fix_local_presence_metadata.sh (any dial prefix + 8389/8399)"
 echo "   - openamd_auto_store.sh          (auto-inject when NEW prefixes are added)"
 echo ""
-echo " Failover: if AIAMD is down / unreachable / errors,"
-echo "           extension 8399 automatically uses stock AMD 8369"
+echo " Failover: if AIAMD is down / unreachable / CPS / errors on hybrid 8399,"
+echo "           dialplan uses 8389-style AA hangup (NOT Goto 8369)."
 echo ""
 echo " Portal columns:"
 echo "   Caller ID     = local-presence CID (CURL/RAND result)"
