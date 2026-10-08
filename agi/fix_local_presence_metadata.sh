@@ -22,7 +22,9 @@
 #        8398 = stock AMD(), HUMAN/PERSON only → agent; else AA hangup (no scam)
 #        8399 = stock AMD MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD final
 #               via Answer+Wait+Record (NO MixMonitor on customer channel);
-#               AIAMD HUMAN→agent+scam; AIAMD MACHINE/FALLBACK→8398 hangup
+#               AIAMD HUMAN→agent+scam; clear MACHINE+speech→hangup;
+#               blank/silent second-opinion OR AIAMD down/CPS → TRUST STOCK
+#               HUMAN→agent (fixes PDROP); FALLBACK hangup rare for blank
 #        Strips leftover 8389 / 8397 / old 8398 / old 8399 on install
 #   5) Does NOT add B(openamd-capture) and does NOT alter Dial() args
 #
@@ -242,15 +244,21 @@ for line in text.splitlines(True):
 block = r'''
 ; --- OpenAMD detect (reads AstDB filled at dial time on _8./_9.) ---
 ; Used by 8399 for HUMAN/PERSON/NOTSURE stock AMD (AIAMD final decide).
-; HUMAN -> agent (+ scam on 8399) | MACHINE -> AA hangup |
-; UNAVAILABLE/ERROR/FALLBACK/BLANK -> dialplan uses 8398-style hangup (NOT Goto 8369).
+; Dialplan routing: HUMAN -> agent (+ scam on 8399) | MACHINE -> AA hangup |
+; FALLBACK -> 8398-style hangup (NOT Goto 8369).
+;
+; AGI openamd.agi policy (stock already HUMAN|PERSON|NOTSURE on this path):
+;   blank/silent/near-empty second-opinion WAV → OPENAMD_STATUS=HUMAN (trust stock)
+;   AIAMD down / ping fail / CPS / UNAVAILABLE → OPENAMD_STATUS=HUMAN (trust stock)
+;   clear MACHINE with real speech audio → MACHINE hangup
+; So FALLBACK rarely hits for blank clips (fixes portal BLANK → PDROP).
 ;
 ; IMPORTANT: Do NOT MixMonitor the live SIP/customer channel during AMD.
 ; MixMonitor-during-AMD + StopMixMonitor broke one-way RX to MeetMe/agent
 ; (chan_sip audiohook). Agent audio > portal clip quality — reverted.
 ; Capture for AIAMD second opinion: Answer + Wait(0.8) + Record(8,5).
 ; Stock AMD() may consume the greeting, so some portal clips can be blank;
-; blank/MACHINE/FALLBACK must hang up — never send empty audio to agents.
+; blank second-opinion trusts stock → agent (stock already heard them).
 [openamd-detect]
 exten => s,1,NoOp(OpenAMD detect lid=${CHANNEL(linkedid)})
  same => n,Set(OAMD_LID=${CHANNEL(linkedid)})
@@ -263,8 +271,10 @@ exten => s,1,NoOp(OpenAMD detect lid=${CHANNEL(linkedid)})
  same => n,ExecIf($["${OPENAMD_FILE}"=""]?Set(OPENAMD_FILE=/tmp/openamd-${OPENAMD_ID}))
  same => n,NoOp(OpenAMD detect caller=${OPENAMD_CALLER} called=${OPENAMD_CALLED} camp=${OPENAMD_CAMPAIGN} id=${OPENAMD_ID})
  ; Fast admit ping (~2ms on the local network).
- ; OK -> analyze WAV + portal. DOWN/AUTH/NOKEY/CPS -> FALLBACK (8398-style hangup by 8399).
+ ; OK -> Record + analyze. On fail AGI may set HUMAN (trust stock) → agent.
+ ; Only non-HUMAN fail → FALLBACK hangup.
  same => n,AGI(openamd.agi,ping)
+ same => n,GotoIf($["${OPENAMD_STATUS}" = "HUMAN"]?human)
  same => n,GotoIf($["${OPENAMD_PING}" != "OK"]?fallback)
  ; Safe capture: Record on answered channel AFTER stock AMD (no MixMonitor).
  same => n,Answer()
@@ -277,7 +287,7 @@ exten => s,1,NoOp(OpenAMD detect lid=${CHANNEL(linkedid)})
  same => n,NoOp(OpenAMD status=${OPENAMD_STATUS} conf=${OPENAMD_CONFIDENCE})
  same => n,GotoIf($["${OPENAMD_STATUS}" = "HUMAN"]?human)
  same => n,GotoIf($["${OPENAMD_STATUS}" = "MACHINE"]?machine)
- ; BLANK / UNAVAILABLE / ERROR / anything else → FALLBACK hangup (never agent)
+ ; UNAVAILABLE / ERROR / anything else → FALLBACK hangup
  same => n,Goto(fallback)
  same => n(human),Set(AMDSTATUS=HUMAN)
  same => n,Set(AMDCAUSE=HUMAN)
@@ -336,7 +346,9 @@ exten => 8398,n,Hangup()
 '''.replace('__AMD_APP__', amd_app)
 
 new8399 = '''
-; --- OpenAMD 8399 (stock MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD; AIAMD HUMAN→agent+scam; down→8398 hangup) ---
+; --- OpenAMD 8399 (stock MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD second opinion) ---
+; AIAMD HUMAN → agent+scam; clear MACHINE+speech → hangup;
+; blank/silent second-opinion OR AIAMD down/CPS → trust stock → agent (not PDROP).
 ; NO MixMonitor on the customer SIP channel here. MixMonitor-during-AMD caused
 ; agent one-way audio (no client voice after StopMixMonitor / MeetMe bridge).
 ; openamd-detect uses Answer+Wait+Record for the AIAMD clip instead.
@@ -502,12 +514,27 @@ echo "=== 138399 (must be ONLY stock _1383XX Wait(2) — no exact Wait(14400)) =
 asterisk -rx "dialplan show 138399@default" | head -10
 
 echo ""
+echo ""
+echo "=== Verify: no MixMonitor-during-AMD on 8399 / openamd-detect ==="
+if asterisk -rx "dialplan show 8399@default" 2>/dev/null | grep -qi MixMonitor; then
+  echo "WARNING: MixMonitor still present on 8399 — agent audio may break"
+else
+  echo "OK: no MixMonitor on 8399 (Answer+Wait+Record second opinion only)"
+fi
+if asterisk -rx "dialplan show openamd-detect" 2>/dev/null | grep -qi MixMonitor; then
+  echo "WARNING: MixMonitor still present in openamd-detect"
+else
+  echo "OK: no MixMonitor in openamd-detect"
+fi
+
+echo ""
 echo "DONE."
 echo "Campaign AMD extensions:"
 echo "  8369 = stock Vicidial AMD (untouched)"
 echo "  8398 = human-only (stock AMD; HUMAN/PERSON → agent; no scam)"
 echo "  8399 = stock MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD;"
-echo "         AIAMD HUMAN→agent+scam; AIAMD down→8398 hangup"
+echo "         AIAMD HUMAN→agent+scam; MACHINE+speech→hangup;"
+echo "         blank/silent OR AIAMD down→trust stock HUMAN→agent"
 echo ""
 echo "Place ONE new call, then:"
 echo "  grep 'OpenAMD STORE' /var/log/asterisk/full | tail -5"

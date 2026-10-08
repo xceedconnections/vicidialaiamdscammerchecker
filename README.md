@@ -24,13 +24,13 @@ git checkout 10-08-2026-Working-STOCK-AIAMD
 |-----------|----------|
 | **8369** | Stock Vicidial AMD — **untouched** by this package (system `VD_amd.agi` unchanged) |
 | **8398** | Stock `AMD()` → only **HUMAN/PERSON** → agent; NOTSURE/MACHINE/HANGUP/TOOLONG/all others → AA hangup via `VD_amd_human_only.agi`. **No scam arm** (same as old 8389). |
-| **8399** | Stock `AMD()` first like 8369. **MACHINE** (and any status that is not HUMAN/PERSON/NOTSURE) → AA hangup. **HUMAN / PERSON / NOTSURE** → Gosub `openamd-detect` (AIAMD final). AIAMD **HUMAN** → agent + `openamd_scam.agi,arm`. AIAMD **MACHINE** or AIAMD down/CPS/FALLBACK → **8398-style AA hangup** (NOT Goto 8369). |
+| **8399** | Stock `AMD()` first like 8369. **MACHINE** (and any status that is not HUMAN/PERSON/NOTSURE) → AA hangup. **HUMAN / PERSON / NOTSURE** → Gosub `openamd-detect` (AIAMD second opinion). AIAMD **HUMAN** → agent + `openamd_scam.agi,arm`. AIAMD **MACHINE with real speech audio** → AA hangup. AIAMD **BLANK/SILENT / near-empty WAV** → **trust stock → HUMAN → agent** (fixes PDROP when Record missed the greeting). AIAMD **down / ping fail / CPS / UNAVAILABLE** → **trust stock → HUMAN → agent** (not 8398 hangup). Dialplan stays HUMAN→agent / MACHINE→hangup / FALLBACK→hangup; AGI returns HUMAN for trust-stock so FALLBACK rarely hits on blank. |
 
-**MixMonitor-during-AMD was reverted:** attaching `MixMonitor` to the live SIP/customer channel around stock `AMD()`, then `StopMixMonitor`, caused **one-way audio** — agents heard no client voice on every connected call (Asterisk/chan_sip audiohook). Stock **8369** (no MixMonitor) always had voice. **Agent audio takes priority over portal clip quality.**
+**MixMonitor-during-AMD was reverted:** attaching `MixMonitor` to the live SIP/customer channel around stock `AMD()`, then `StopMixMonitor`, caused **one-way audio** — agents heard no client voice on every connected call (Asterisk/chan_sip audiohook). Stock **8369** (no MixMonitor) always had voice. **Agent audio takes priority over portal clip quality.** Install verify still confirms **no MixMonitor-during-AMD**.
 
-**Current 8399 capture:** after stock AMD returns HUMAN/PERSON/NOTSURE, `openamd-detect` does `Answer()` + `Wait(0.8)` + `Record(8,5)` (no MixMonitor on the bridged media path). Scam `MixMonitor` still arms only on the agent-bound path after AIAMD HUMAN. Some portal AMD clips may be blank/silent when the greeting was already consumed by stock AMD — that is expected; blank/empty uploads hang up as MACHINE/FALLBACK and **must not** go to agents.
+**Current 8399 capture:** after stock AMD returns HUMAN/PERSON/NOTSURE, `openamd-detect` does `Answer()` + `Wait(0.8)` + `Record(8,5)` (no MixMonitor on the bridged media path). Scam `MixMonitor` still arms only on the agent-bound path after AIAMD HUMAN. Some portal AMD clips may be blank/silent when the greeting was already consumed by stock AMD — that is expected; **blank second-opinion trusts stock HUMAN/PERSON/NOTSURE → agent** (stock already heard them). Never hang up stock-HUMAN/NOTSURE solely because the second-opinion clip is blank. Clear MACHINE with audible speech still hangs up.
 
-Critical: **8399 must not Goto 8369** when AIAMD is down. FALLBACK means hang up 8398-style. Install strips leftover **8389** and **8397** (and rewrites 8398/8399).
+Critical: **8399 must not Goto 8369**. Clear MACHINE still AA-hangs. Install strips leftover **8389** and **8397** (and rewrites 8398/8399).
 
 ## Campaign settings
 
