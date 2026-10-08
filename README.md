@@ -8,35 +8,36 @@ For normal AMD-only dialers, keep using:
 
 https://github.com/xceedconnections/vicidialaiamd
 
-## Rollback tag
+## Rollback tags
 
-Both repos are tagged `LastUpdatedTechnique` before this hybrid routing change.
-Do **not** delete that tag. To roll back a dialer checkout:
+Do **not** delete existing tags (including `10-08-2026-Working-STOCK-AIAMD` and `LastUpdatedTechnique`). To roll back a dialer checkout:
 
 ```bash
 git checkout LastUpdatedTechnique
+# or
+git checkout 10-08-2026-Working-STOCK-AIAMD
 ```
 
-## AMD routing (8369 / 8389 / 8399)
+## AMD routing (8369 / 8398 / 8399)
 
 | Extension | Behavior |
 |-----------|----------|
-| **8369** | Stock Vicidial AMD — **untouched** by this package |
-| **8389** | Stock `AMD()` → only **HUMAN/PERSON** → agent; NOTSURE/MACHINE/HANGUP/TOOLONG/all others → AA hangup via `VD_amd_human_only.agi` (never overwrites system `VD_amd.agi`) |
-| **8399** | **Hybrid:** stock `AMD()` first. HUMAN/PERSON → agent (+ scam arm). All other stock results → Gosub `openamd-detect` (AIAMD). AIAMD HUMAN → agent (+ scam arm). AIAMD MACHINE or AIAMD down/CPS/FALLBACK → **8389-style AA hangup** (NOT Goto 8369) |
+| **8369** | Stock Vicidial AMD — **untouched** by this package (system `VD_amd.agi` unchanged) |
+| **8398** | Stock `AMD()` → only **HUMAN/PERSON** → agent; NOTSURE/MACHINE/HANGUP/TOOLONG/all others → AA hangup via `VD_amd_human_only.agi`. **No scam arm** (same as old 8389). |
+| **8399** | Stock `AMD()` first like 8369. **MACHINE** (and any status that is not HUMAN/PERSON/NOTSURE) → AA hangup. **HUMAN / PERSON / NOTSURE** → Gosub `openamd-detect` (AIAMD final). AIAMD **HUMAN** → agent + `openamd_scam.agi,arm`. AIAMD **MACHINE** or AIAMD down/CPS/FALLBACK → **8398-style AA hangup** (NOT Goto 8369). |
 
-Critical: hybrid **8399 must not Goto 8389** on the AIAMD path (that would hang up before AIAMD runs). It only reuses 8389’s human-only hangup criteria when AIAMD is unavailable or returns MACHINE.
+Critical: **8399 must not Goto 8369** when AIAMD is down. FALLBACK means hang up 8398-style. Install strips leftover **8389** and **8397** (and rewrites 8398/8399).
 
 ## Campaign settings
 
 Set **AMD / routing extension** to:
 
-- `8389` — human-only stock AMD (no AIAMD)
-- `8399` — hybrid (recommended when AIAMD is available)
+- `8398` — human-only stock AMD (no AIAMD, no scam)
+- `8399` — AIAMD final decide on HUMAN/NOTSURE (recommended when AIAMD is available; scam on agent path)
 
 ### WaitForSilence Options
 
-`2000,2,30` is optional Vicidial answering-machine / message-related. It is **not required** for 8389/8399 hybrid routing.
+`2000,2,30` is optional Vicidial answering-machine / message-related. It is **not required** for 8398/8399 routing.
 
 ### AMD Agent Route Options — leave DISABLED / blank
 
@@ -50,15 +51,17 @@ NOTSURE,TOOLONG
 MACHINE,INITIALSILENCE
 ```
 
-Those would send NOTSURE+TOOLONG and MACHINE+INITIALSILENCE to agents — which **breaks 8389 human-only** and fights the 8399 design. Leave **AMD Agent Route Options blank/disabled** for 8389 and 8399.
+Those would send NOTSURE+TOOLONG and MACHINE+INITIALSILENCE to agents — which **breaks 8398 human-only** and fights the 8399 design. Leave **AMD Agent Route Options blank/disabled** for 8398 and 8399.
 
 ## What this package adds (SCAM)
 
-After AMD decides **HUMAN** on agent-bound **8399** paths, before the agent script:
+After AIAMD decides **HUMAN** on agent-bound **8399** paths, before the agent script:
 
 ```text
 AGI(openamd_scam.agi,arm)
 ```
+
+**8398 does not arm scam** (strict human-only → VDAD, like old 8389).
 
 That AGI:
 
@@ -104,9 +107,11 @@ grep -n 'OpenAMD STORE' /etc/asterisk/extensions-vicidial.conf | head
 
 ```bash
 asterisk -rx "dialplan show 8369@default"
-asterisk -rx "dialplan show 8389@default"
+asterisk -rx "dialplan show 8398@default"
 asterisk -rx "dialplan show 8399@default"
 asterisk -rx "dialplan show openamd-detect"
+# 8389 / 8397 should be gone after install
+asterisk -rx "dialplan show 8389@default"
 ls -l /var/lib/asterisk/agi-bin/VD_amd_human_only.agi /var/lib/asterisk/agi-bin/VD_amd.agi
 ```
 

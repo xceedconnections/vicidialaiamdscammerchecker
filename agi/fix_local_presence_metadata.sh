@@ -19,8 +19,10 @@
 #   3) Installs openamd.agi + VD_amd_human_only.agi + [openamd-detect]
 #   4) Injects AMD routing:
 #        8369 = stock Vicidial (untouched)
-#        8389 = stock AMD(), HUMAN/PERSON only → agent; else AA hangup
-#        8399 = hybrid: stock AMD HUMAN → agent; else AIAMD; AIAMD down → 8389 hangup
+#        8398 = stock AMD(), HUMAN/PERSON only → agent; else AA hangup (no scam)
+#        8399 = stock AMD MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD final;
+#               AIAMD HUMAN→agent+scam; AIAMD MACHINE/FALLBACK→8398 hangup
+#        Strips leftover 8389 / 8397 / old 8398 / old 8399 on install
 #   5) Does NOT add B(openamd-capture) and does NOT alter Dial() args
 #
 set -euo pipefail
@@ -214,7 +216,7 @@ if [[ "${INJECTED_N}" -eq 0 ]]; then
 fi
 echo "AstDB lead STORE lines present: ${INJECTED_N}"
 
-echo "[4/5] Write [openamd-detect] + inject 8389/8399..."
+echo "[4/5] Write [openamd-detect] + inject 8398/8399..."
 touch "$CUSTOM"
 cp -a "$CUSTOM" "${CUSTOM}.bak.lpcurl.$(date +%Y%m%d%H%M%S)"
 
@@ -238,9 +240,9 @@ for line in text.splitlines(True):
 
 block = r'''
 ; --- OpenAMD detect (reads AstDB filled at dial time on _8./_9.) ---
-; Used by hybrid 8399 for non-HUMAN stock AMD results (second opinion).
-; HUMAN -> agent | MACHINE -> AA hangup | UNAVAILABLE/ERROR/FALLBACK ->
-;   dialplan uses 8389-style hangup (NOT Goto 8369).
+; Used by 8399 for HUMAN/PERSON/NOTSURE stock AMD (AIAMD final decide).
+; HUMAN -> agent (+ scam on 8399) | MACHINE -> AA hangup |
+; UNAVAILABLE/ERROR/FALLBACK -> dialplan uses 8398-style hangup (NOT Goto 8369).
 [openamd-detect]
 exten => s,1,NoOp(OpenAMD detect lid=${CHANNEL(linkedid)})
  same => n,Set(OAMD_LID=${CHANNEL(linkedid)})
@@ -253,7 +255,7 @@ exten => s,1,NoOp(OpenAMD detect lid=${CHANNEL(linkedid)})
  same => n,Set(OPENAMD_FILE=/tmp/openamd-${OPENAMD_ID})
  same => n,NoOp(OpenAMD detect caller=${OPENAMD_CALLER} called=${OPENAMD_CALLED} camp=${OPENAMD_CAMPAIGN})
  ; Fast admit ping (~2ms on the local network).
- ; OK -> record + portal. DOWN/AUTH/NOKEY/CPS -> FALLBACK (8389-style hangup by 8399).
+ ; OK -> record + portal. DOWN/AUTH/NOKEY/CPS -> FALLBACK (8398-style hangup by 8399).
  same => n,AGI(openamd.agi,ping)
  same => n,GotoIf($["${OPENAMD_PING}" != "OK"]?fallback)
  ; Answer + short settle so carrier RTP is flowing before Record starts.
@@ -277,7 +279,7 @@ exten => s,1,NoOp(OpenAMD detect lid=${CHANNEL(linkedid)})
  same => n,Return()
  same => n(fallback),Set(AMDSTATUS=FALLBACK)
  same => n,Set(AMDCAUSE=OPENAMD_${IF($["${OPENAMD_PING}"!=""]?${OPENAMD_PING}:UNAVAILABLE)})
- same => n,NoOp(OpenAMD FALLBACK — 8399 will use 8389-style hangup reason=${AMDCAUSE})
+ same => n,NoOp(OpenAMD FALLBACK — 8399 will use 8398-style hangup reason=${AMDCAUSE})
  same => n,Return()
 '''
 
@@ -314,62 +316,70 @@ for conf in (
 if amd_app == 'AMD()':
     print('Using default AMD() (no labeled 8369 AMD step found)')
 
-new8389 = '''
-; --- OpenAMD 8389 human-only (stock AMD; only HUMAN to agent) ---
-exten => 8389,1,AGI(agi://127.0.0.1:4577/call_log)
-exten => 8389,n,Playback(sip-silence)
-exten => 8389,n,__AMD_APP__
-exten => 8389,n,NoOp(8389 human-only AMDSTATUS=${AMDSTATUS} AMDCAUSE=${AMDCAUSE})
-exten => 8389,n,AGI(VD_amd_human_only.agi,${EXTEN}-----NO)
-exten => 8389,n,AGI(agi-VDAD_ALL_outbound.agi,NORMAL-----LB-----${CONNECTEDLINE(name)})
-exten => 8389,n,Hangup()
+new8398 = '''
+; --- OpenAMD 8398 human-only (stock AMD; only HUMAN/PERSON → agent; no scam) ---
+exten => 8398,1,AGI(agi://127.0.0.1:4577/call_log)
+exten => 8398,n,Playback(sip-silence)
+exten => 8398,n,__AMD_APP__
+exten => 8398,n,NoOp(8398 human-only AMDSTATUS=${AMDSTATUS} AMDCAUSE=${AMDCAUSE})
+exten => 8398,n,AGI(VD_amd_human_only.agi,${EXTEN}-----NO)
+exten => 8398,n,AGI(agi-VDAD_ALL_outbound.agi,NORMAL-----LB-----${CONNECTEDLINE(name)})
+exten => 8398,n,Hangup()
 '''.replace('__AMD_APP__', amd_app)
 
 new8399 = '''
-; --- OpenAMD 8399 hybrid (stock AMD HUMAN→agent; else AIAMD; AIAMD down→8389 hangup) ---
+; --- OpenAMD 8399 (stock MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD; AIAMD HUMAN→agent+scam; down→8398 hangup) ---
 exten => 8399,1,AGI(agi://127.0.0.1:4577/call_log)
 exten => 8399,n,Playback(sip-silence)
 exten => 8399,n,__AMD_APP__
 exten => 8399,n,NoOp(8399 stock AMD AMDSTATUS=${AMDSTATUS} AMDCAUSE=${AMDCAUSE})
-exten => 8399,n,GotoIf($["${AMDSTATUS}" = "HUMAN"]?stock_human)
-exten => 8399,n,GotoIf($["${AMDSTATUS}" = "PERSON"]?stock_human)
-; non-HUMAN → AIAMD second opinion (do not Goto 8389)
+exten => 8399,n,GotoIf($["${AMDSTATUS}" = "HUMAN"]?aiamd_check)
+exten => 8399,n,GotoIf($["${AMDSTATUS}" = "PERSON"]?aiamd_check)
+exten => 8399,n,GotoIf($["${AMDSTATUS}" = "NOTSURE"]?aiamd_check)
+; MACHINE / HANGUP / TOOLONG / all others → AA hangup (like 8398)
+exten => 8399,n,GotoIf($[1]?aa_hangup)
+exten => 8399,n(aiamd_check),NoOp(8399 AIAMD final decide)
 exten => 8399,n,Gosub(openamd-detect,s,1(${CAMPCUST},))
 exten => 8399,n,NoOp(8399 AIAMD AMDSTATUS=${AMDSTATUS} AMDCAUSE=${AMDCAUSE})
 exten => 8399,n,GotoIf($["${AMDSTATUS}" = "HUMAN"]?aiamd_human)
-; MACHINE or FALLBACK → 8389-style AA hangup
-exten => 8399,n,ExecIf($["${AMDSTATUS}" != "MACHINE"]?Set(AMDSTATUS=MACHINE))
-exten => 8399,n,AGI(VD_amd_human_only.agi,${EXTEN}-----NO)
-exten => 8399,n,Hangup()
-exten => 8399,n(stock_human),NoOp(8399 stock HUMAN → agent)
-exten => 8399,n,AGI(VD_amd.agi,${EXTEN}-----NO)
-exten => 8399,n,AGI(openamd_scam.agi,arm)
-exten => 8399,n,AGI(agi-VDAD_ALL_outbound.agi,NORMAL-----LB-----${CONNECTEDLINE(name)})
-exten => 8399,n,Hangup()
+; MACHINE or FALLBACK → 8398-style AA hangup
+exten => 8399,n,GotoIf($[1]?aa_hangup)
 exten => 8399,n(aiamd_human),NoOp(8399 AIAMD HUMAN → agent)
 exten => 8399,n,AGI(VD_amd.agi,${EXTEN}-----NO)
 exten => 8399,n,AGI(openamd_scam.agi,arm)
 exten => 8399,n,AGI(agi-VDAD_ALL_outbound.agi,NORMAL-----LB-----${CONNECTEDLINE(name)})
 exten => 8399,n,Hangup()
+exten => 8399,n(aa_hangup),NoOp(8399 AA hangup)
+exten => 8399,n,ExecIf($["${AMDSTATUS}" != "MACHINE"]?Set(AMDSTATUS=MACHINE))
+exten => 8399,n,AGI(VD_amd_human_only.agi,${EXTEN}-----NO)
+exten => 8399,n,Hangup()
 '''.replace('__AMD_APP__', amd_app)
 
 def strip_openamd_extens(text: str) -> str:
-    """Remove OpenAMD 8389/8399 and leftover exact 138399 Local-hold blocks."""
+    """Remove OpenAMD 8389/8397/8398/8399 and leftover exact 138399 Local-hold blocks."""
     lines = text.splitlines(True)
     out = []
     for line in lines:
         s = line.strip()
         if s.startswith('; --- OpenAMD exact 8399'):
             continue
-        if s.startswith('; --- OpenAMD 8399 hybrid'):
+        if s.startswith('; --- OpenAMD 8399'):
             continue
-        if s.startswith('; --- OpenAMD 8389 human-only'):
+        if s.startswith('; --- OpenAMD 8398'):
+            continue
+        if s.startswith('; --- OpenAMD 8389'):
+            continue
+        if s.startswith('; --- OpenAMD 8397'):
             continue
         if s.startswith('; --- OpenAMD local-optimize'):
             continue
         if '138399' in s and s.startswith(';'):
             continue
         if re.match(r'exten\s*=>\s*8399\b', s):
+            continue
+        if re.match(r'exten\s*=>\s*8398\b', s):
+            continue
+        if re.match(r'exten\s*=>\s*8397\b', s):
             continue
         if re.match(r'exten\s*=>\s*8389\b', s):
             continue
@@ -379,7 +389,7 @@ def strip_openamd_extens(text: str) -> str:
     return ''.join(out)
 
 def inject_openamd_in_default(text: str) -> str:
-    """Insert 8389 + hybrid 8399 inside [default], after the last 8369 Hangup if present."""
+    """Insert 8398 + 8399 inside [default], after the last 8369 Hangup if present."""
     text = strip_openamd_extens(text)
     lines = text.splitlines(True)
     start = None
@@ -405,33 +415,33 @@ def inject_openamd_in_default(text: str) -> str:
             insert_at -= 1
     if insert_at is None:
         insert_at = len(lines)
-        print('WARNING: [default] / 8369 Hangup not found — appending 8389/8399 at EOF')
+        print('WARNING: [default] / 8369 Hangup not found — appending 8398/8399 at EOF')
     else:
-        print('Injecting 8389+8399 at line %d (inside [default]=%s)' % (
+        print('Injecting 8398+8399 at line %d (inside [default]=%s)' % (
             insert_at + 1, 'yes' if start is not None else 'unknown'))
-    block = new8389 + new8399
+    block = new8398 + new8399
     if not block.endswith('\n'):
         block = block + '\n'
     if not block.startswith('\n'):
         block = '\n' + block
     return ''.join(lines[:insert_at]) + block + ''.join(lines[insert_at:])
 
-# extensions.conf — primary home for 8389/8399
+# extensions.conf — primary home for 8398/8399
 p = Path('/etc/asterisk/extensions.conf')
 p.write_text(inject_openamd_in_default(p.read_text(encoding='utf-8', errors='replace')), encoding='utf-8')
-print('Wrote extensions 8389 (human-only) + 8399 (hybrid); stripped leftover 138399 if any')
+print('Wrote extensions 8398 (human-only) + 8399 (AIAMD final); stripped 8389/8397/old 8398/8399/138399 if any')
 
-# Remove conflicting 8389/8399 from other Asterisk includes (keep OpenAMD ones only)
+# Remove conflicting AMD extens from other Asterisk includes (keep OpenAMD ones only)
 for other in ('/etc/asterisk/extensions-vicidial.conf', '/etc/asterisk/extensions-custom.conf'):
     op = Path(other)
     if not op.exists():
         continue
     ot = op.read_text(encoding='utf-8', errors='replace')
     nt = strip_openamd_extens(ot)
-    # Never strip [openamd-detect] — only bare exten 8389/8399 lines
+    # Never strip [openamd-detect] — only bare exten 8389/8397/8398/8399 lines
     if nt != ot:
         op.write_text(nt, encoding='utf-8')
-        print('Removed conflicting exten 8389/8399 from %s' % other)
+        print('Removed conflicting exten 8389/8397/8398/8399 from %s' % other)
 PY
 
 sed -i 's/\r$//' "$CUSTOM" "$VICI" /etc/asterisk/extensions.conf
@@ -464,11 +474,15 @@ echo ""
 echo "=== 8369 (stock AMD — unchanged) ==="
 asterisk -rx "dialplan show 8369@default" | head -12
 echo ""
-echo "=== 8389 (human-only stock AMD) ==="
-asterisk -rx "dialplan show 8389@default" | head -14
+echo "=== 8398 (human-only stock AMD; no scam) ==="
+asterisk -rx "dialplan show 8398@default" | head -14
 echo ""
-echo "=== 8399 (hybrid: stock HUMAN + AIAMD for non-HUMAN) ==="
-asterisk -rx "dialplan show 8399@default" | head -22
+echo "=== 8399 (stock MACHINE hangup; HUMAN/NOTSURE → AIAMD final) ==="
+asterisk -rx "dialplan show 8399@default" | head -28
+echo ""
+echo "=== 8389 / 8397 (must be absent after strip) ==="
+asterisk -rx "dialplan show 8389@default" 2>/dev/null | head -5 || true
+asterisk -rx "dialplan show 8397@default" 2>/dev/null | head -5 || true
 echo ""
 echo "=== 138399 (must be ONLY stock _1383XX Wait(2) — no exact Wait(14400)) ==="
 asterisk -rx "dialplan show 138399@default" | head -10
@@ -477,8 +491,9 @@ echo ""
 echo "DONE."
 echo "Campaign AMD extensions:"
 echo "  8369 = stock Vicidial AMD (untouched)"
-echo "  8389 = human-only (stock AMD; only HUMAN/PERSON → agent)"
-echo "  8399 = hybrid (stock HUMAN → agent; else AIAMD; AIAMD down → 8389 hangup)"
+echo "  8398 = human-only (stock AMD; HUMAN/PERSON → agent; no scam)"
+echo "  8399 = stock MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD;"
+echo "         AIAMD HUMAN→agent+scam; AIAMD down→8398 hangup"
 echo ""
 echo "Place ONE new call, then:"
 echo "  grep 'OpenAMD STORE' /var/log/asterisk/full | tail -5"
