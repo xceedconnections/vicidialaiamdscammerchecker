@@ -336,6 +336,18 @@ if ! echo "$OAMD_8399" | grep -q 'AMD'; then
   echo "$OAMD_8399" | head -25
   exit 1
 fi
+if ! echo "$OAMD_8399" | grep -q 'MixMonitor'; then
+  echo "ERROR: extension 8399 missing MixMonitor during AMD (greeting capture) after install."
+  echo "---- dialplan show 8399@default (first 30 lines) ----"
+  echo "$OAMD_8399" | head -30
+  exit 1
+fi
+if ! echo "$OAMD_8399" | grep -q 'StopMixMonitor'; then
+  echo "ERROR: extension 8399 missing StopMixMonitor after AMD after install."
+  echo "---- dialplan show 8399@default (first 30 lines) ----"
+  echo "$OAMD_8399" | head -30
+  exit 1
+fi
 if ! echo "$OAMD_8399" | grep -q 'aiamd_check'; then
   echo "ERROR: extension 8399 missing aiamd_check (HUMAN/NOTSURE → AIAMD) after install."
   echo "---- dialplan show 8399@default (first 30 lines) ----"

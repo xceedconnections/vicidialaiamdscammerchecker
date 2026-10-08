@@ -13,7 +13,9 @@
 #
 # Modes:
 #   AGI(openamd.agi,ping)  — fast health check only (no WAV required)
-#   AGI(openamd.agi,ID,...) — analyze recorded /tmp/openamd-ID.wav
+#   AGI(openamd.agi,ID,...) — analyze /tmp/openamd-ID.wav
+#     (8399: MixMonitor during AMD writes that path; callid MUST be OPENAMD_ID.
+#      Do not invent empty WAVs — missing file → UNAVAILABLE/FALLBACK.)
 #
 use strict;
 use warnings;
