@@ -14,8 +14,9 @@
 # Modes:
 #   AGI(openamd.agi,ping)  — fast health check only (no WAV required)
 #   AGI(openamd.agi,ID,...) — analyze /tmp/openamd-ID.wav
-#     (8399: MixMonitor during AMD writes that path; callid MUST be OPENAMD_ID.
-#      Do not invent empty WAVs — missing file → UNAVAILABLE/FALLBACK.)
+#     (8399: openamd-detect Record() writes that path; callid MUST be OPENAMD_ID.
+#      Do not invent empty WAVs — missing file → UNAVAILABLE/FALLBACK.
+#      Near-empty WAV → MACHINE hangup — never HUMAN to agent.)
 #
 use strict;
 use warnings;
@@ -306,9 +307,10 @@ unless (-f $wav) {
 my $wav_bytes = -s $wav;
 $wav_bytes = 0 unless defined $wav_bytes;
 if ($wav_bytes < 200) {
-    # Asterisk wrote a header-only / near-empty capture (hangup before RTP).
-    # Still POST so the portal blank checkbox decides AA vs agent.
-    $AGI->verbose("OpenAMD blank wav ${wav_bytes} bytes - analyzing as silence", 1);
+    # Header-only / near-empty capture — never send to agents.
+    # Still POST for portal CDR (BLANK), then force MACHINE regardless of
+    # portal blank_as_machine checkbox (empty upload ≠ delayed hello).
+    $AGI->verbose("OpenAMD blank wav ${wav_bytes} bytes - will hang up as MACHINE", 1);
 }
 
 # Quick re-check before spending analyze time (server may have gone down mid-call)
@@ -371,14 +373,18 @@ if (!$res) {
     my ($cf) = $b =~ /"confidence"\s*:\s*([0-9.]+)/;
     my ($ms) = $b =~ /"processing_ms"\s*:\s*([0-9]+)/;
     $st = $st // 'ERROR';
-    # Only HUMAN / MACHINE are actionable; anything else -> UNAVAILABLE/FALLBACK (8398 hangup)
-    if ($st eq 'HUMAN' || $st eq 'MACHINE') {
+    # Empty/near-empty upload: always MACHINE (never HUMAN/agent), even if portal
+    # blank_as_machine is OFF and API would return HUMAN.
+    if ($wav_bytes < 200) {
+        set_machine("empty/near-empty wav ${wav_bytes}B (portal said $st)");
+    } elsif ($st eq 'HUMAN' || $st eq 'MACHINE') {
+        # Only HUMAN / MACHINE are actionable; BLANK/IVR/etc -> FALLBACK below
         $AGI->set_variable('OPENAMD_STATUS', $st);
         $AGI->set_variable('OPENAMD_CONFIDENCE', $cf // '0');
         $AGI->set_variable('OPENAMD_MS', $ms // '0');
         $AGI->verbose("OpenAMD OK $st caller=$outcid called=$lead", 1);
-    } elsif ($wav_bytes < 200) {
-        set_unavailable("blank wav + unexpected status=$st");
+    } elsif ($st eq 'BLANK' || $st eq 'SILENT') {
+        set_machine("portal status=$st");
     } else {
         set_unavailable("unexpected analyze status=$st");
     }

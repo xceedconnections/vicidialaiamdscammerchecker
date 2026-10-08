@@ -336,16 +336,26 @@ if ! echo "$OAMD_8399" | grep -q 'AMD'; then
   echo "$OAMD_8399" | head -25
   exit 1
 fi
-if ! echo "$OAMD_8399" | grep -q 'MixMonitor'; then
-  echo "ERROR: extension 8399 missing MixMonitor during AMD (greeting capture) after install."
+# MixMonitor-during-AMD was reverted (broke agent one-way RX). Scam MixMonitor
+# may still appear on the agent path via openamd_scam.agi — that is OK.
+# Fail if the AMD greeting path still MixMonitors the customer channel.
+if echo "$OAMD_8399" | grep -q 'StopMixMonitor'; then
+  echo "ERROR: extension 8399 still has StopMixMonitor (MixMonitor-during-AMD must stay reverted)."
   echo "---- dialplan show 8399@default (first 30 lines) ----"
   echo "$OAMD_8399" | head -30
   exit 1
 fi
-if ! echo "$OAMD_8399" | grep -q 'StopMixMonitor'; then
-  echo "ERROR: extension 8399 missing StopMixMonitor after AMD after install."
-  echo "---- dialplan show 8399@default (first 30 lines) ----"
-  echo "$OAMD_8399" | head -30
+OAMD_DETECT="$(asterisk -rx "dialplan show openamd-detect" 2>/dev/null || true)"
+if ! echo "$OAMD_DETECT" | grep -q 'Record('; then
+  echo "ERROR: openamd-detect missing Record() capture path after MixMonitor revert."
+  echo "---- dialplan show openamd-detect (first 30 lines) ----"
+  echo "$OAMD_DETECT" | head -30
+  exit 1
+fi
+if echo "$OAMD_DETECT" | grep -q 'OPENAMD_CAPTURED'; then
+  echo "ERROR: openamd-detect still references OPENAMD_CAPTURED (MixMonitor path must be gone)."
+  echo "---- dialplan show openamd-detect (first 30 lines) ----"
+  echo "$OAMD_DETECT" | head -30
   exit 1
 fi
 if ! echo "$OAMD_8399" | grep -q 'aiamd_check'; then
