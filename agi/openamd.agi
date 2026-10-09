@@ -13,17 +13,17 @@
 #     AIAMD HUMAN → agent + scam
 #     AIAMD MACHINE with real speech audio → hangup
 #     AIAMD BLANK/SILENT / near-empty WAV / missing speech → TRUST STOCK →
-#       OPENAMD_STATUS=HUMAN → agent (stock already heard them; Record missed
-#       greeting). Never hang up solely because the second-opinion clip is blank.
+#       OPENAMD_STATUS=HUMAN → agent. Never hang up solely because the
+#       concurrent Monitor capture is blank or missing.
 #     AIAMD down / ping fail / UNAVAILABLE / CPS / 429 / health fail →
 #       TRUST STOCK → HUMAN → agent (NOT 8398 hangup) when stock was
 #       HUMAN|PERSON|NOTSURE. Otherwise OPENAMD_STATUS=UNAVAILABLE/FALLBACK.
 #
 # Modes:
 #   AGI(openamd.agi,ping)  — fast health check only (no WAV required)
-#   AGI(openamd.agi,ID,...) — analyze /tmp/openamd-ID.wav
-#     (8399: openamd-detect Record() writes that path; callid MUST be OPENAMD_ID.
-#      Missing/blank second-opinion WAV with stock HUMAN|PERSON|NOTSURE → HUMAN.
+#   AGI(openamd.agi,ID,...) — analyze Monitor's merged /tmp/openamd-ID.wav
+#     (or its nonempty -in/-out artifact if the merge is unavailable).
+#     Missing/blank capture with stock HUMAN|PERSON|NOTSURE → HUMAN.
 #      Clear MACHINE with audible speech still hangs up.)
 #
 use strict;
@@ -194,7 +194,7 @@ my $health = health_url_from($url);
 my $admit  = admit_url_from($url);
 
 # ------------------------------------------------------------------
-# Ping / admit mode (before Record) — fail fast
+# Ping / admit mode (before analyze) — fail fast
 # Checks online + per-server CPS limit. Over CPS = same as offline.
 # When stock HUMAN|PERSON|NOTSURE: fail → HUMAN (agent), not FALLBACK hangup.
 # ------------------------------------------------------------------
@@ -339,7 +339,40 @@ $AGI->verbose(
     1
 );
 
-my $wav = "/tmp/openamd-${callid}.wav";
+my $wav_base = "/tmp/openamd-${callid}";
+my @wav_artifacts = (
+    "${wav_base}.wav",
+    "${wav_base}-in.wav",
+    "${wav_base}-out.wav",
+);
+# Always remove merged and split Monitor artifacts, including timeout/error exits.
+END {
+    for my $path (@wav_artifacts) {
+        unlink $path if defined $path && -f $path;
+    }
+}
+
+# Monitor(wav,base,m) normally writes base.wav after StopMonitor(). On older
+# systems or a failed merge, prefer the caller receive leg (-in) before -out.
+# Select a nonempty artifact first; retain an existing zero-byte file so the
+# API can record a BLANK result and apply stock-HUMAN trust.
+my $wav = '';
+for my $candidate (@wav_artifacts) {
+    my $candidate_bytes = -s $candidate;
+    if (-f $candidate && defined $candidate_bytes && $candidate_bytes > 0) {
+        $wav = $candidate;
+        last;
+    }
+}
+if ($wav eq '') {
+    for my $candidate (@wav_artifacts) {
+        if (-f $candidate) {
+            $wav = $candidate;
+            last;
+        }
+    }
+}
+
 $AGI->set_variable('OPENAMD_STATUS', 'UNAVAILABLE');
 $AGI->set_variable('OPENAMD_CONFIDENCE', '0');
 $AGI->set_variable('OPENAMD_MS', '0');
@@ -348,9 +381,9 @@ unless ($key) {
     set_unavailable('API key missing');
     exit 0;
 }
-unless (-f $wav) {
-    # Record never wrote a file — trust stock HUMAN if applicable, else FALLBACK.
-    set_unavailable("wav missing after Record: $wav");
+unless ($wav ne '' && -f $wav) {
+    # Monitor produced no usable artifact — trust stock HUMAN if applicable.
+    set_unavailable("Monitor wav missing: ${wav_base}{.wav,-in.wav,-out.wav}");
     exit 0;
 }
 my $wav_bytes = -s $wav;
@@ -370,7 +403,6 @@ if ($wav_bytes < 200) {
     if (!$hr || !$hr->is_success) {
         my $err = $hr ? $hr->status_line : ($@ || 'no response');
         set_unavailable("pre-analyze health failed: $err");
-        unlink $wav if -f $wav;
         exit 0;
     }
 }
@@ -444,5 +476,4 @@ if ($lid ne '') {
     $AGI->set_variable("DB_DELETE(openamd/$lid/campaign)", '');
 }
 
-unlink $wav if -f $wav;
 exit 0;

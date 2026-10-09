@@ -17,8 +17,9 @@
 #        - Installs AMD routing extensions:
 #            8369 = stock Vicidial AMD (untouched)
 #            8398 = human-only (stock AMD; HUMAN/PERSON → agent; else AA; no scam)
-#            8399 = stock MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD final;
-#                   AIAMD HUMAN→agent+scam; AIAMD down/CPS/FALLBACK → 8398 hangup
+#            8399 = Monitor captures concurrently with stock AMD;
+#                   MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD final;
+#                   blank/down/CPS/error→trust stock and pass to agent
 #                   (NOT Goto 8369). Strips leftover 8389/8397 on install.
 #        - Stores Caller ID + Called Number at dial time into AstDB for
 #          ANY VICIdial dial prefix (_8. _9. _87899. _94455. _94556. _6. etc.)
@@ -336,26 +337,36 @@ if ! echo "$OAMD_8399" | grep -q 'AMD'; then
   echo "$OAMD_8399" | head -25
   exit 1
 fi
-# MixMonitor-during-AMD was reverted (broke agent one-way RX). Scam MixMonitor
-# may still appear on the agent path via openamd_scam.agi — that is OK.
-# Fail if the AMD greeting path still MixMonitors the customer channel.
-if echo "$OAMD_8399" | grep -q 'StopMixMonitor'; then
-  echo "ERROR: extension 8399 still has StopMixMonitor (MixMonitor-during-AMD must stay reverted)."
+# Verify actual loaded applications, not installer source comments.
+if ! echo "$OAMD_8399" | grep -Eq 'Monitor\('; then
+  echo "ERROR: extension 8399 missing Monitor() before stock AMD."
+  echo "---- dialplan show 8399@default (first 30 lines) ----"
+  echo "$OAMD_8399" | head -30
+  exit 1
+fi
+if ! echo "$OAMD_8399" | grep -Eq 'StopMonitor\('; then
+  echo "ERROR: extension 8399 missing StopMonitor() after stock AMD."
+  echo "---- dialplan show 8399@default (first 30 lines) ----"
+  echo "$OAMD_8399" | head -30
+  exit 1
+fi
+if echo "$OAMD_8399" | grep -Eq '(MixMonitor|StopMixMonitor)\('; then
+  echo "ERROR: extension 8399 contains a MixMonitor application; use standard Monitor only."
   echo "---- dialplan show 8399@default (first 30 lines) ----"
   echo "$OAMD_8399" | head -30
   exit 1
 fi
 OAMD_DETECT="$(asterisk -rx "dialplan show openamd-detect" 2>/dev/null || true)"
-if ! echo "$OAMD_DETECT" | grep -q 'Record('; then
-  echo "ERROR: openamd-detect missing Record() capture path after MixMonitor revert."
+if ! echo "$OAMD_DETECT" | grep -q 'OPENAMD_CAPTURED.*MONITOR'; then
+  echo "ERROR: openamd-detect does not recognize OPENAMD_CAPTURED=MONITOR."
   echo "---- dialplan show openamd-detect (first 30 lines) ----"
   echo "$OAMD_DETECT" | head -30
   exit 1
 fi
-if echo "$OAMD_DETECT" | grep -q 'OPENAMD_CAPTURED'; then
-  echo "ERROR: openamd-detect still references OPENAMD_CAPTURED (MixMonitor path must be gone)."
-  echo "---- dialplan show openamd-detect (first 30 lines) ----"
-  echo "$OAMD_DETECT" | head -30
+if echo "$OAMD_8399" | grep -Eq 'Record\('; then
+  echo "ERROR: extension 8399 contains post-AMD Record(); concurrent Monitor must be used."
+  echo "---- dialplan show 8399@default (first 30 lines) ----"
+  echo "$OAMD_8399" | head -30
   exit 1
 fi
 if ! echo "$OAMD_8399" | grep -q 'aiamd_check'; then
@@ -415,7 +426,7 @@ echo " Campaign AMD / routing extensions:"
 echo "   8369 = stock Vicidial AMD (untouched)"
 echo "   8398 = human-only (stock AMD; HUMAN/PERSON → agent; else AA; no scam)"
 echo "   8399 = stock MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD;"
-echo "          AIAMD HUMAN→agent+scam; AIAMD down → 8398 hangup"
+echo "          AIAMD HUMAN→agent+scam; blank/down/CPS/error→trust stock→agent"
 echo " AGI : ${AGI1}/openamd.agi + ${AGI1}/VD_amd_human_only.agi"
 echo " URL : ${ANALYZE_URL}"
 echo " Conf: ${CONF}"
@@ -427,7 +438,7 @@ echo "   - fix_local_presence_metadata.sh (any dial prefix + 8398/8399; strips 8
 echo "   - openamd_auto_store.sh          (auto-inject when NEW prefixes are added)"
 echo ""
 echo " Failover: if AIAMD is down / unreachable / CPS / errors on 8399,"
-echo "           dialplan uses 8398-style AA hangup (NOT Goto 8369)."
+echo "           trust stock HUMAN/PERSON/NOTSURE and pass to the agent."
 echo ""
 echo " Portal columns:"
 echo "   Caller ID     = local-presence CID (CURL/RAND result)"

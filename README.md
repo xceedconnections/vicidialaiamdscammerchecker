@@ -24,11 +24,11 @@ git checkout 10-08-2026-Working-STOCK-AIAMD
 |-----------|----------|
 | **8369** | Stock Vicidial AMD — **untouched** by this package (system `VD_amd.agi` unchanged) |
 | **8398** | Stock `AMD()` → only **HUMAN/PERSON** → agent; NOTSURE/MACHINE/HANGUP/TOOLONG/all others → AA hangup via `VD_amd_human_only.agi`. **No scam arm** (same as old 8389). |
-| **8399** | Stock `AMD()` first like 8369. **MACHINE** (and any status that is not HUMAN/PERSON/NOTSURE) → AA hangup. **HUMAN / PERSON / NOTSURE** → Gosub `openamd-detect` (AIAMD second opinion). AIAMD **HUMAN** → agent + `openamd_scam.agi,arm`. AIAMD **MACHINE with real speech audio** → AA hangup. AIAMD **BLANK/SILENT / near-empty WAV** → **trust stock → HUMAN → agent** (fixes PDROP when Record missed the greeting). AIAMD **down / ping fail / CPS / UNAVAILABLE** → **trust stock → HUMAN → agent** (not 8398 hangup). Dialplan stays HUMAN→agent / MACHINE→hangup / FALLBACK→hangup; AGI returns HUMAN for trust-stock so FALLBACK rarely hits on blank. |
+| **8399** | Runs the same stock `AMD()` application/parameters cloned from 8369 while standard `Monitor()` captures the greeting. **MACHINE** (and any status that is not HUMAN/PERSON/NOTSURE) → immediate AA hangup. **HUMAN / PERSON / NOTSURE** → `openamd-detect`. AIAMD audible **HUMAN** → agent + scam; audible **MACHINE** → AA hangup. Missing/blank capture, AIAMD down/timeout, or API/CPS error → **trust stock and pass to the agent**, never PDROP. |
 
-**MixMonitor-during-AMD was reverted:** attaching `MixMonitor` to the live SIP/customer channel around stock `AMD()`, then `StopMixMonitor`, caused **one-way audio** — agents heard no client voice on every connected call (Asterisk/chan_sip audiohook). Stock **8369** (no MixMonitor) always had voice. **Agent audio takes priority over portal clip quality.** Install verify still confirms **no MixMonitor-during-AMD**.
+**MixMonitor-during-AMD remains reverted:** attaching `MixMonitor` to the live SIP/customer channel around stock `AMD()`, then `StopMixMonitor`, caused one-way agent audio. 8399 now uses Asterisk's standard channel recorder, `Monitor(wav,${OPENAMD_FILE},m)`, which VICIdial itself uses. It does not use the reverted MixMonitor audiohook.
 
-**Current 8399 capture:** after stock AMD returns HUMAN/PERSON/NOTSURE, `openamd-detect` does `Answer()` + `Wait(0.8)` + `Record(8,5)` (no MixMonitor on the bridged media path). Scam `MixMonitor` still arms only on the agent-bound path after AIAMD HUMAN. Some portal AMD clips may be blank/silent when the greeting was already consumed by stock AMD — that is expected; **blank second-opinion trusts stock HUMAN/PERSON/NOTSURE → agent** (stock already heard them). Never hang up stock-HUMAN/NOTSURE solely because the second-opinion clip is blank. Clear MACHINE with audible speech still hangs up.
+**Current 8399 capture:** `Monitor()` starts after call logging and capture ID/file setup, before `Playback(sip-silence)` and stock `AMD()`. `StopMonitor()` merges the stream to `/tmp/openamd-ID.wav`; the AGI can use a nonempty split artifact if the merged WAV is unavailable. Capturing concurrently preserves the greeting and adds no post-AMD five-second dead-air window. The 8399 path never falls back to `Answer()`/`Wait()`/`Record()`. Missing/blank capture and service failures trust stock HUMAN/PERSON/NOTSURE. Scam `MixMonitor` remains independent and arms only after AIAMD HUMAN on the agent-bound path.
 
 Critical: **8399 must not Goto 8369**. Clear MACHINE still AA-hangs. Install strips leftover **8389** and **8397** (and rewrites 8398/8399).
 
@@ -114,6 +114,8 @@ asterisk -rx "dialplan show 8369@default"
 asterisk -rx "dialplan show 8398@default"
 asterisk -rx "dialplan show 8399@default"
 asterisk -rx "dialplan show openamd-detect"
+# 8399 output must show Monitor and StopMonitor, with no MixMonitor application.
+# openamd-detect must show OPENAMD_CAPTURED compared with MONITOR.
 # 8389 / 8397 should be gone after install
 asterisk -rx "dialplan show 8389@default"
 ls -l /var/lib/asterisk/agi-bin/VD_amd_human_only.agi /var/lib/asterisk/agi-bin/VD_amd.agi
