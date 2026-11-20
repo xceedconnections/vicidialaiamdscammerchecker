@@ -19,7 +19,7 @@
 #            8398 = human-only (stock AMD; HUMAN/PERSON → agent; else AA; no scam)
 #            8399 = Monitor captures concurrently with stock AMD;
 #                   MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD final;
-#                   blank/down/CPS/error→trust stock and pass to agent
+#                   blank/0s/missing recording→AA hangup; down/CPS with a real recording→trust stock
 #                   (NOT Goto 8369). Strips leftover 8389/8397 on install.
 #        - Stores Caller ID + Called Number at dial time into AstDB for
 #          ANY VICIdial dial prefix (_8. _9. _87899. _94455. _94556. _6. etc.)
@@ -426,7 +426,7 @@ echo " Campaign AMD / routing extensions:"
 echo "   8369 = stock Vicidial AMD (untouched)"
 echo "   8398 = human-only (stock AMD; HUMAN/PERSON → agent; else AA; no scam)"
 echo "   8399 = stock MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD;"
-echo "          AIAMD HUMAN→agent+scam; blank/down/CPS/error→trust stock→agent"
+echo "          AIAMD HUMAN (checked recording)→agent+scam; blank/0s→AA hangup"
 echo " AGI : ${AGI1}/openamd.agi + ${AGI1}/VD_amd_human_only.agi"
 echo " URL : ${ANALYZE_URL}"
 echo " Conf: ${CONF}"
@@ -437,8 +437,8 @@ echo "   - fix_caller_called.sh           (Caller ID + Called Number -> portal)"
 echo "   - fix_local_presence_metadata.sh (any dial prefix + 8398/8399; strips 8389/8397)"
 echo "   - openamd_auto_store.sh          (auto-inject when NEW prefixes are added)"
 echo ""
-echo " Failover: if AIAMD is down / unreachable / CPS / errors on 8399,"
-echo "           trust stock HUMAN/PERSON/NOTSURE and pass to the agent."
+echo " Failover: blank or 0-second audio is AA (not sent to the agent)."
+echo "           If AIAMD is down and a usable recording exists, trust stock."
 echo ""
 echo " Portal columns:"
 echo "   Caller ID     = local-presence CID (CURL/RAND result)"

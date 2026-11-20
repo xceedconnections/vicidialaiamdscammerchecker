@@ -248,10 +248,10 @@ block = r'''
 ; FALLBACK -> 8398-style hangup (NOT Goto 8369).
 ;
 ; AGI openamd.agi policy (stock already HUMAN|PERSON|NOTSURE on this path):
-;   blank/silent/near-empty second-opinion WAV → OPENAMD_STATUS=HUMAN (trust stock)
-;   AIAMD down / ping fail / CPS / UNAVAILABLE → OPENAMD_STATUS=HUMAN (trust stock)
+;   blank/silent/near-empty/missing WAV → OPENAMD_STATUS=MACHINE (AA, not agent)
+;   portal HUMAN only after a real recording was checked → agent
+;   AIAMD down / ping fail / CPS on a usable recording → OPENAMD_STATUS=HUMAN
 ;   clear MACHINE with real speech audio → MACHINE hangup
-; So FALLBACK rarely hits for blank clips (fixes portal BLANK → PDROP).
 ;
 ; Monitor() is Asterisk's standard channel recorder (also used by VICIdial).
 ; It captures the greeting while stock AMD listens, avoiding post-AMD dead air.
@@ -274,8 +274,8 @@ exten => s,1,NoOp(OpenAMD detect lid=${CHANNEL(linkedid)})
  same => n,AGI(openamd.agi,ping)
  same => n,GotoIf($["${OPENAMD_STATUS}" = "HUMAN"]?human)
  same => n,GotoIf($["${OPENAMD_PING}" != "OK"]?fallback)
- ; 8399 already recorded concurrently. Never start a post-AMD Record fallback:
- ; missing/empty Monitor artifacts trust stock HUMAN/PERSON/NOTSURE in the AGI.
+ ; 8399 already recorded concurrently. Never start a post-AMD Record fallback.
+ ; Missing/empty Monitor artifacts are MACHINE (not passed to the agent).
  same => n,GotoIf($["${OPENAMD_CAPTURED}" = "MONITOR"]?analyze)
  ; Legacy capture remains only for explicit non-8399 callers of this context.
  same => n,Answer()
@@ -346,8 +346,8 @@ exten => 8398,n,Hangup()
 
 new8399 = '''
 ; --- OpenAMD 8399 (stock MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD second opinion) ---
-; AIAMD HUMAN → agent+scam; clear MACHINE+speech → hangup;
-; blank/silent second-opinion OR AIAMD down/CPS → trust stock → agent (not PDROP).
+; AIAMD HUMAN (checked recording) → agent+scam; MACHINE/blank/0s → hangup;
+; AIAMD down/CPS with a usable recording → trust stock → agent (not PDROP).
 ; Standard Monitor() captures the greeting concurrently with stock AMD.
 ; No MixMonitor audiohook and no post-AMD Record/dead-air delay on this path.
 exten => 8399,1,AGI(agi://127.0.0.1:4577/call_log)
@@ -541,8 +541,8 @@ echo "Campaign AMD extensions:"
 echo "  8369 = stock Vicidial AMD (untouched)"
 echo "  8398 = human-only (stock AMD; HUMAN/PERSON → agent; no scam)"
 echo "  8399 = stock MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD;"
-echo "         AIAMD HUMAN→agent+scam; MACHINE+speech→hangup;"
-echo "         blank/silent OR AIAMD down→trust stock HUMAN→agent"
+echo "         AIAMD HUMAN (checked recording)→agent+scam; MACHINE/blank/0s→hangup;"
+echo "         AIAMD down with a usable recording→trust stock HUMAN→agent"
 echo ""
 echo "Place ONE new call, then:"
 echo "  grep 'OpenAMD STORE' /var/log/asterisk/full | tail -5"
