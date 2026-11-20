@@ -102,6 +102,14 @@ cd /root/vicidialaiamdscammerchecker
 bash vicibox_install.sh http://aiamd.xceedconnections.com:2130 oam_YOUR_API_KEY
 ```
 
+After that one install, use the browser updater (no SSH/PuTTY):
+
+```text
+http://YOUR_DIALER_IP/update.php
+```
+
+Unlock with the same `oam_…` API key. The page shows **installed commit** vs **latest GitHub** and **Update now** pulls + re-runs `vicibox_install.sh`.
+
 ## New carrier prefixes (automatic)
 
 Install also enables `openamd_auto_store.sh` (cron every minute + optional systemd path).
