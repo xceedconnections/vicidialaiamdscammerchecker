@@ -504,23 +504,21 @@ EOF
       return 0
     fi
   fi
-  # Test helper as root (auth with the key we just wrote)
-  if /usr/local/sbin/openamd_web_update.sh verify "${API_KEY}" >/dev/null 2>&1; then
+  # Smoke-test helper + passwordless sudo (no login gate — key shown on page)
+  if /usr/local/sbin/openamd_web_update.sh status >/dev/null 2>&1; then
     echo "    Helper OK: /usr/local/sbin/openamd_web_update.sh"
   else
-    echo "WARNING: openamd_web_update.sh verify failed"
+    echo "WARNING: openamd_web_update.sh status check failed (GitHub may be unreachable)"
   fi
-  # Smoke-test sudo path as the web user when possible
   if [[ -n "${web_user}" ]] && id "${web_user}" >/dev/null 2>&1; then
-    if su -s /bin/bash "${web_user}" -c "sudo -n /usr/local/sbin/openamd_web_update.sh verify '${API_KEY}'" >/dev/null 2>&1; then
+    if su -s /bin/bash "${web_user}" -c "sudo -n /usr/local/sbin/openamd_web_update.sh status" >/dev/null 2>&1; then
       echo "    Passwordless sudo OK for ${web_user}"
     else
       echo "WARNING: sudo -n as ${web_user} failed — check ${sudoers_file}"
     fi
   fi
   echo "    Web UI: http://$(hostname -I 2>/dev/null | awk '{print $1}')/update.php"
-  echo "            (or https://YOUR_DIALER_IP/update.php)"
-  echo "    Auth  : OpenAMD API key (oam_…) — same as portal"
+  echo "            Shows installed oam_ key · change key · Update AGI from GitHub"
   echo "    Web user for sudo: ${web_user}"
 }
 install_web_updater || echo "WARNING: web updater install had issues"
@@ -556,5 +554,6 @@ echo ""
 echo " New carriers/prefixes: no reinstall needed — cron/path watcher"
 echo "   re-applies OpenAMD STORE within ~1 minute of VICIdial rebuild."
 echo " Manual: bash ${SCRIPT_DIR}/fix_caller_called.sh"
-echo " Updates: open https://YOUR_DIALER/update.php  (API key = oam_…)"
+echo " Updates (no SSH): https://YOUR_DIALER/update.php"
+echo "   — shows installed oam_ key, change key, or Update AGI from GitHub"
 echo ""

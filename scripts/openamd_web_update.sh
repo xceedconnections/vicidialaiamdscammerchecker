@@ -1,41 +1,27 @@
 #!/bin/bash
 #
 # Root helper for /srv/www/htdocs/update.php
-# Usage: openamd_web_update.sh status|apply
-# Invoked via: sudo -n /usr/local/sbin/openamd_web_update.sh <cmd>
+# First install is always via PuTTY (vicibox_install.sh + oam_ key).
+# This helper only: show status/key, change key, pull GitHub + refresh AGIs.
+#
+# Usage: openamd_web_update.sh status|set_key|apply [new_api_key]
 #
 set -euo pipefail
 
 CMD="${1:-status}"
-PROVIDED_KEY="${2:-}"
+NEW_KEY="${2:-}"
 REPO="${OPENAMD_GITHUB_REPO:-xceedconnections/vicidialaiamdscammerchecker}"
 BRANCH="${OPENAMD_GITHUB_BRANCH:-main}"
 CONF="/etc/asterisk/openamd.conf"
 LOCK="/var/lock/openamd_web_update.lock"
 LOG_DIR="/var/log/openamd"
+AGI1="/usr/share/asterisk/agi-bin"
+AGI2="/var/lib/asterisk/agi-bin"
 mkdir -p "${LOG_DIR}" 2>/dev/null || true
 
 json_escape() {
   python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1" 2>/dev/null \
     || printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
-}
-
-require_key() {
-  read_conf || {
-    echo '{"ok":false,"error":"Missing /etc/asterisk/openamd.conf"}'
-    exit 1
-  }
-  local expected="${OPENAMD_API_KEY:-}"
-  if [[ -z "${expected}" ]]; then
-    echo '{"ok":false,"error":"OPENAMD_API_KEY empty in openamd.conf"}'
-    exit 1
-  fi
-  if [[ -z "${PROVIDED_KEY}" || "${PROVIDED_KEY}" != "${expected}" ]]; then
-    echo '{"ok":false,"error":"Unauthorized — invalid API key"}'
-    exit 1
-  fi
-  REPO="${OPENAMD_GITHUB_REPO:-${REPO}}"
-  BRANCH="${OPENAMD_GITHUB_BRANCH:-${BRANCH}}"
 }
 
 read_conf() {
@@ -45,6 +31,8 @@ read_conf() {
   # shellcheck source=/dev/null
   source "${CONF}"
   set +a
+  REPO="${OPENAMD_GITHUB_REPO:-${REPO}}"
+  BRANCH="${OPENAMD_GITHUB_BRANCH:-${BRANCH}}"
   return 0
 }
 
@@ -67,32 +55,113 @@ find_source_dir() {
   return 1
 }
 
+write_api_key() {
+  local key="$1"
+  [[ -n "${key}" ]] || return 1
+  if [[ ! -f "${CONF}" ]]; then
+    echo '{"ok":false,"error":"Missing /etc/asterisk/openamd.conf — install once via PuTTY first."}'
+    exit 1
+  fi
+  if grep -qE '^\s*OPENAMD_API_KEY=' "${CONF}"; then
+    sed -i "s|^[[:space:]]*OPENAMD_API_KEY=.*|OPENAMD_API_KEY=${key}|" "${CONF}"
+  else
+    printf '\nOPENAMD_API_KEY=%s\n' "${key}" >>"${CONF}"
+  fi
+  chmod 640 "${CONF}" 2>/dev/null || true
+}
+
 gh_latest() {
-  local api url
+  local api body
   api="https://api.github.com/repos/${REPO}/commits/${BRANCH}"
-  url="$(curl -fsS --max-time 12 \
+  body="$(curl -fsS --max-time 12 \
     -H "Accept: application/vnd.github+json" \
     -H "User-Agent: openamd-web-update" \
     "${api}" 2>/dev/null || true)"
-  if [[ -z "${url}" && "${BRANCH}" == "main" ]]; then
-    api="https://api.github.com/repos/${REPO}/commits/master"
-    url="$(curl -fsS --max-time 12 \
+  if [[ -z "${body}" && "${BRANCH}" == "main" ]]; then
+    BRANCH="master"
+    api="https://api.github.com/repos/${REPO}/commits/${BRANCH}"
+    body="$(curl -fsS --max-time 12 \
       -H "Accept: application/vnd.github+json" \
       -H "User-Agent: openamd-web-update" \
       "${api}" 2>/dev/null || true)"
-    BRANCH="master"
   fi
-  printf '%s' "${url}"
+  printf '%s' "${body}"
+}
+
+install_agi_files() {
+  local src="$1"
+  local agi_dir="" f name dest
+  mkdir -p "${AGI1}" "${AGI2}"
+
+  if [[ -d "${src}/agi" ]]; then
+    agi_dir="${src}/agi"
+  else
+    agi_dir="${src}"
+  fi
+
+  for name in openamd.agi VD_amd_human_only.agi openamd_scam.agi; do
+    f="${agi_dir}/${name}"
+    [[ -f "${f}" ]] || continue
+    sed -i 's/\r$//' "${f}" 2>/dev/null || true
+    for dest in "${AGI1}/${name}" "${AGI2}/${name}"; do
+      cp -f "${f}" "${dest}"
+      chmod 755 "${dest}"
+      chown asterisk:asterisk "${dest}" 2>/dev/null || true
+    done
+    echo "installed ${name}"
+  done
+
+  # scam upload helper (shell, not AGI, but used by scam path)
+  if [[ -f "${agi_dir}/openamd_scam_upload.sh" ]]; then
+    sed -i 's/\r$//' "${agi_dir}/openamd_scam_upload.sh" 2>/dev/null || true
+    for dest in "${AGI1}/openamd_scam_upload.sh" "${AGI2}/openamd_scam_upload.sh"; do
+      cp -f "${agi_dir}/openamd_scam_upload.sh" "${dest}"
+      chmod 755 "${dest}"
+      chown asterisk:asterisk "${dest}" 2>/dev/null || true
+    done
+    echo "installed openamd_scam_upload.sh"
+  fi
+
+  if [[ -f "${AGI1}/openamd.agi" ]]; then
+    perl -c "${AGI1}/openamd.agi" >/dev/null
+  else
+    echo "ERROR: openamd.agi missing after copy" >&2
+    return 1
+  fi
+}
+
+refresh_web_updater() {
+  local src="$1"
+  local htdocs=""
+  if [[ -f "${src}/scripts/openamd_web_update.sh" ]]; then
+    sed -i 's/\r$//' "${src}/scripts/openamd_web_update.sh" 2>/dev/null || true
+    install -m 755 -o root -g root "${src}/scripts/openamd_web_update.sh" /usr/local/sbin/openamd_web_update.sh
+  fi
+  for htdocs in /srv/www/htdocs /var/www/html; do
+    if [[ -d "${htdocs}" && -f "${src}/www/update.php" ]]; then
+      sed -i 's/\r$//' "${src}/www/update.php" 2>/dev/null || true
+      install -m 644 "${src}/www/update.php" "${htdocs}/update.php"
+      echo "refreshed ${htdocs}/update.php"
+      break
+    fi
+  done
 }
 
 cmd_status() {
-  read_conf || true
   local src="" local_full="" local_short="" local_date="" local_msg=""
   local remote_json="" remote_full="" remote_short="" remote_date="" remote_msg=""
-  local behind=false err=""
+  local behind=false err="" key="" analyze="" base=""
+
+  if ! read_conf; then
+    err="Missing /etc/asterisk/openamd.conf — run vicibox_install.sh once via PuTTY first."
+  else
+    key="${OPENAMD_API_KEY:-}"
+    analyze="${OPENAMD_URL:-}"
+    base="$(printf '%s' "${analyze}" | sed -E 's#/api/v1/analyze/?$##')"
+  fi
 
   if ! src="$(find_source_dir)"; then
-    err="Source git checkout not found under /root/vicidialaiamdscammerchecker"
+    [[ -z "${err}" ]] && err="Source git checkout not found under /root/vicidialaiamdscammerchecker"
   else
     local_full="$(git -C "${src}" rev-parse HEAD 2>/dev/null || true)"
     local_short="$(git -C "${src}" rev-parse --short HEAD 2>/dev/null || true)"
@@ -115,12 +184,15 @@ cmd_status() {
   fi
 
   local ok=true
-  if [[ -z "${local_full}" || -z "${remote_full}" ]]; then
+  if [[ -z "${key}" || -z "${local_full}" ]]; then
     ok=false
   fi
 
   printf '{'
   printf '"ok":%s,' "${ok}"
+  printf '"api_key":%s,' "$(json_escape "${key}")"
+  printf '"analyze_url":%s,' "$(json_escape "${analyze}")"
+  printf '"base_url":%s,' "$(json_escape "${base}")"
   printf '"repo":%s,' "$(json_escape "${REPO}")"
   printf '"branch":%s,' "$(json_escape "${BRANCH}")"
   printf '"source_dir":%s,' "$(json_escape "${src}")"
@@ -137,25 +209,47 @@ cmd_status() {
   printf '}\n'
 }
 
+cmd_set_key() {
+  local key="${NEW_KEY}"
+  if [[ -z "${key}" ]]; then
+    echo '{"ok":false,"error":"New API key required"}'
+    exit 1
+  fi
+  if [[ ! "${key}" =~ ^oam_ ]]; then
+    echo '{"ok":false,"error":"Key should look like oam_…"}'
+    exit 1
+  fi
+  write_api_key "${key}"
+  printf '{"ok":true,"api_key":%s,"message":"API key saved to openamd.conf"}\n' "$(json_escape "${key}")"
+}
+
 cmd_apply() {
   read_conf || {
-    echo '{"ok":false,"error":"Missing /etc/asterisk/openamd.conf — run vicibox_install.sh once first."}'
+    echo '{"ok":false,"error":"Missing /etc/asterisk/openamd.conf — install once via PuTTY first."}'
     exit 1
   }
 
-  local src key base_url analyze
-  if ! src="$(find_source_dir)"; then
-    echo '{"ok":false,"error":"Source git checkout not found. Clone repo to /root/vicidialaiamdscammerchecker first."}'
+  local src key
+  key="${OPENAMD_API_KEY:-}"
+  if [[ -n "${NEW_KEY}" ]]; then
+    if [[ ! "${NEW_KEY}" =~ ^oam_ ]]; then
+      echo '{"ok":false,"error":"Key should look like oam_…"}'
+      exit 1
+    fi
+    write_api_key "${NEW_KEY}"
+    key="${NEW_KEY}"
+    OPENAMD_API_KEY="${key}"
+  fi
+
+  if [[ -z "${key}" ]]; then
+    echo '{"ok":false,"error":"No OPENAMD_API_KEY in openamd.conf"}'
     exit 1
   fi
 
-  key="${OPENAMD_API_KEY:-}"
-  analyze="${OPENAMD_URL:-}"
-  if [[ -z "${key}" || -z "${analyze}" ]]; then
-    echo '{"ok":false,"error":"OPENAMD_URL / OPENAMD_API_KEY missing in openamd.conf"}'
+  if ! src="$(find_source_dir)"; then
+    echo '{"ok":false,"error":"Source git checkout not found. Clone to /root/vicidialaiamdscammerchecker via PuTTY first."}'
     exit 1
   fi
-  base_url="$(printf '%s' "${analyze}" | sed -E 's#/api/v1/analyze/?$##')"
 
   exec 9>"${LOCK}"
   if ! flock -n 9; then
@@ -165,10 +259,10 @@ cmd_apply() {
 
   local logf="${LOG_DIR}/web_update_$(date +%Y%m%d_%H%M%S).log"
   {
-    echo "=== OpenAMD web update $(date -Is) ==="
+    echo "=== OpenAMD AGI web update $(date -Is) ==="
     echo "source=${src}"
     echo "repo=${REPO} branch=${BRANCH}"
-    echo "base=${base_url}"
+    echo "api_key=${key}"
     cd "${src}"
     git remote set-url origin "https://github.com/${REPO}.git" 2>/dev/null || \
       git remote add origin "https://github.com/${REPO}.git" 2>/dev/null || true
@@ -185,9 +279,12 @@ cmd_apply() {
       exit 1
     fi
     echo "HEAD=$(git rev-parse --short HEAD) $(git log -1 --format='%s')"
-    sed -i 's/\r$//' vicibox_install.sh 2>/dev/null || true
-    bash vicibox_install.sh "${base_url}" "${key}"
-    echo "=== done ==="
+    find "${src}" -type f \( -name '*.sh' -o -name '*.agi' -o -name '*.py' -o -name '*.php' \) -exec sed -i 's/\r$//' {} + 2>/dev/null || true
+    install_agi_files "${src}"
+    refresh_web_updater "${src}"
+    # Keep conf key in sync (URL unchanged)
+    write_api_key "${key}"
+    echo "=== AGI update done (dialplan not rewritten) ==="
   } >"${logf}" 2>&1
   local rc=$?
 
@@ -198,12 +295,13 @@ cmd_apply() {
   tail_txt="$(tail -n 80 "${logf}" 2>/dev/null || true)"
 
   if [[ ${rc} -ne 0 ]]; then
-    printf '{"ok":false,"error":"Update failed (see log)","log_file":%s,"log":%s,"local_commit":%s}\n' \
-      "$(json_escape "${logf}")" "$(json_escape "${tail_txt}")" "$(json_escape "${local_short}")"
+    printf '{"ok":false,"error":"AGI update failed (see log)","api_key":%s,"log_file":%s,"log":%s,"local_commit":%s}\n' \
+      "$(json_escape "${key}")" "$(json_escape "${logf}")" "$(json_escape "${tail_txt}")" "$(json_escape "${local_short}")"
     exit 1
   fi
 
-  printf '{"ok":true,"local_commit":%s,"local_full":%s,"local_message":%s,"log_file":%s,"log":%s}\n' \
+  printf '{"ok":true,"api_key":%s,"local_commit":%s,"local_full":%s,"local_message":%s,"log_file":%s,"log":%s}\n' \
+    "$(json_escape "${key}")" \
     "$(json_escape "${local_short}")" \
     "$(json_escape "${local_full}")" \
     "$(json_escape "${local_msg}")" \
@@ -212,20 +310,11 @@ cmd_apply() {
 }
 
 case "${CMD}" in
-  verify)
-    require_key
-    echo '{"ok":true}'
-    ;;
-  status)
-    require_key
-    cmd_status
-    ;;
-  apply)
-    require_key
-    cmd_apply
-    ;;
+  status)  cmd_status ;;
+  set_key) cmd_set_key ;;
+  apply)   cmd_apply ;;
   *)
-    echo '{"ok":false,"error":"Usage: openamd_web_update.sh verify|status|apply <api_key>"}'
+    echo '{"ok":false,"error":"Usage: openamd_web_update.sh status|set_key|apply [api_key]"}'
     exit 1
     ;;
 esac

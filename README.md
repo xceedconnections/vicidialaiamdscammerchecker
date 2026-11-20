@@ -102,13 +102,13 @@ cd /root/vicidialaiamdscammerchecker
 bash vicibox_install.sh http://aiamd.xceedconnections.com:2130 oam_YOUR_API_KEY
 ```
 
-After that one install, use the browser updater (no SSH/PuTTY):
+First-time install is always via PuTTY (enter the `oam_…` key there). After that, use the browser updater (no SSH):
 
 ```text
 http://YOUR_DIALER_IP/update.php
 ```
 
-Unlock with the same `oam_…` API key. The page shows **installed commit** vs **latest GitHub** and **Update now** pulls + re-runs `vicibox_install.sh`.
+The page shows the **installed OAM key**, lets you **change the key**, and **Update AGI from GitHub** when a newer commit is available (pulls + refreshes AGI scripts using the existing or new key — does not rewrite dialplan).
 
 ## New carrier prefixes (automatic)
 
