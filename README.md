@@ -120,8 +120,8 @@ asterisk -rx "dialplan show 8369@default"
 asterisk -rx "dialplan show 8398@default"
 asterisk -rx "dialplan show 8399@default"
 asterisk -rx "dialplan show openamd-detect"
-# 8399 output must show Monitor and StopMonitor, with no MixMonitor application.
-# openamd-detect must show OPENAMD_CAPTURED compared with MONITOR.
+# 8399 output must show Monitor/StopMonitor and OPENAMD_CAPTURED=MONITOR (no MixMonitor).
+# openamd-detect must show OPENAMD_BYTES + Record() fallback when Monitor is empty.
 # 8389 / 8397 should be gone after install
 asterisk -rx "dialplan show 8389@default"
 ls -l /var/lib/asterisk/agi-bin/VD_amd_human_only.agi /var/lib/asterisk/agi-bin/VD_amd.agi

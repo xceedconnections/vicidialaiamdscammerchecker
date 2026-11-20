@@ -539,10 +539,20 @@ else
   echo "ERROR: 8399 capture applications are not the expected Monitor/StopMonitor pair"
   exit 1
 fi
-if echo "$OAMD_DETECT" | grep -q 'OPENAMD_CAPTURED.*MONITOR'; then
-  echo "OK: openamd-detect recognizes the Monitor capture"
+if echo "$OAMD_8399" | grep -q 'OPENAMD_CAPTURED=MONITOR'; then
+  echo "OK: 8399 marks concurrent Monitor capture"
 else
-  echo "ERROR: openamd-detect does not recognize OPENAMD_CAPTURED=MONITOR"
+  echo "ERROR: 8399 missing Set(OPENAMD_CAPTURED=MONITOR)"
+  exit 1
+fi
+# Empty Monitor must fall back to Record(4s) — do not require old MONITOR skip GotoIf.
+if echo "$OAMD_DETECT" | grep -q 'OPENAMD_BYTES' \
+  && echo "$OAMD_DETECT" | grep -Eq 'Record\('; then
+  echo "OK: openamd-detect measures Monitor bytes and can Record a second-opinion clip"
+else
+  echo "ERROR: openamd-detect missing OPENAMD_BYTES / Record fallback for empty Monitor"
+  echo "---- dialplan show openamd-detect (first 40 lines) ----"
+  echo "$OAMD_DETECT" | head -40
   exit 1
 fi
 

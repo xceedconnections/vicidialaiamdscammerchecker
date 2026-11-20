@@ -356,15 +356,28 @@ if echo "$OAMD_8399" | grep -Eq '(MixMonitor|StopMixMonitor)\('; then
   echo "$OAMD_8399" | head -30
   exit 1
 fi
+if ! echo "$OAMD_8399" | grep -q 'OPENAMD_CAPTURED=MONITOR'; then
+  echo "ERROR: extension 8399 missing Set(OPENAMD_CAPTURED=MONITOR)."
+  echo "---- dialplan show 8399@default (first 30 lines) ----"
+  echo "$OAMD_8399" | head -30
+  exit 1
+fi
 OAMD_DETECT="$(asterisk -rx "dialplan show openamd-detect" 2>/dev/null || true)"
-if ! echo "$OAMD_DETECT" | grep -q 'OPENAMD_CAPTURED.*MONITOR'; then
-  echo "ERROR: openamd-detect does not recognize OPENAMD_CAPTURED=MONITOR."
-  echo "---- dialplan show openamd-detect (first 30 lines) ----"
-  echo "$OAMD_DETECT" | head -30
+# Empty Monitor → Record(4s) second opinion. Do not require old MONITOR skip GotoIf.
+if ! echo "$OAMD_DETECT" | grep -q 'OPENAMD_BYTES'; then
+  echo "ERROR: openamd-detect missing OPENAMD_BYTES size check for Monitor artifacts."
+  echo "---- dialplan show openamd-detect (first 40 lines) ----"
+  echo "$OAMD_DETECT" | head -40
+  exit 1
+fi
+if ! echo "$OAMD_DETECT" | grep -Eq 'Record\('; then
+  echo "ERROR: openamd-detect missing Record() fallback when Monitor is empty/tiny."
+  echo "---- dialplan show openamd-detect (first 40 lines) ----"
+  echo "$OAMD_DETECT" | head -40
   exit 1
 fi
 if echo "$OAMD_8399" | grep -Eq 'Record\('; then
-  echo "ERROR: extension 8399 contains post-AMD Record(); concurrent Monitor must be used."
+  echo "ERROR: extension 8399 itself must not Record(); Record belongs in openamd-detect only."
   echo "---- dialplan show 8399@default (first 30 lines) ----"
   echo "$OAMD_8399" | head -30
   exit 1
