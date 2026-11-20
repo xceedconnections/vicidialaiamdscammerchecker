@@ -243,20 +243,18 @@ for line in text.splitlines(True):
 
 block = r'''
 ; --- OpenAMD detect (reads AstDB filled at dial time on _8./_9.) ---
-; Used by 8399 for HUMAN/PERSON/NOTSURE stock AMD (AIAMD final decide).
-; Dialplan routing: HUMAN -> agent (+ scam on 8399) | MACHINE -> AA hangup |
-; FALLBACK -> 8398-style hangup (NOT Goto 8369).
+; Used by 8399 AFTER stock AMD already said HUMAN|PERSON|NOTSURE.
+; Flow: stock AMD first (MACHINE already hung up on 8399) → ensure a real
+; WAV exists → POST to AIAMD → HUMAN/BLANK/VM/FAX decide.
 ;
-; AGI openamd.agi policy (stock already HUMAN|PERSON|NOTSURE on this path):
-;   blank/silent/near-empty/missing WAV → OPENAMD_STATUS=MACHINE (AA, not agent)
-;   portal HUMAN only after a real recording was checked → agent
-;   AIAMD down / ping fail / CPS on a usable recording → OPENAMD_STATUS=HUMAN
-;   clear MACHINE with real speech audio → MACHINE hangup
+; Capture policy:
+;   1) Prefer the concurrent Monitor greeting clip from 8399 (if large enough).
+;   2) If Monitor is missing/tiny (0s), Record a fixed 4s second-opinion window
+;      while the callee is still on the line (silence-stop MUST be 0).
+;   Never POST a header-only/0s file and pretend it was checked.
 ;
-; Monitor() is Asterisk's standard channel recorder (also used by VICIdial).
-; It captures the greeting while stock AMD listens, avoiding post-AMD dead air.
 ; Do NOT use MixMonitor/StopMixMonitor here: that audiohook caused one-way
-; agent audio after the bridge. Monitor's m option merges to OPENAMD_FILE.wav.
+; agent audio after the bridge.
 [openamd-detect]
 exten => s,1,NoOp(OpenAMD detect lid=${CHANNEL(linkedid)})
  same => n,Set(OAMD_LID=${CHANNEL(linkedid)})
@@ -268,20 +266,30 @@ exten => s,1,NoOp(OpenAMD detect lid=${CHANNEL(linkedid)})
  same => n,ExecIf($["${OPENAMD_ID}"=""]?Set(OPENAMD_ID=${EPOCH}-${RAND(10000,99999)}))
  same => n,ExecIf($["${OPENAMD_FILE}"=""]?Set(OPENAMD_FILE=/tmp/openamd-${OPENAMD_ID}))
  same => n,NoOp(OpenAMD detect caller=${OPENAMD_CALLER} called=${OPENAMD_CALLED} camp=${OPENAMD_CAMPAIGN} id=${OPENAMD_ID})
- ; Fast admit ping (~2ms on the local network).
- ; OK -> analyze the concurrent Monitor capture. On fail AGI may set HUMAN.
- ; Only non-HUMAN fail → FALLBACK hangup.
+ ; Fast admit ping. Only non-HUMAN fail → FALLBACK hangup.
  same => n,AGI(openamd.agi,ping)
  same => n,GotoIf($["${OPENAMD_STATUS}" = "HUMAN"]?human)
  same => n,GotoIf($["${OPENAMD_PING}" != "OK"]?fallback)
- ; 8399 already recorded concurrently. Never start a post-AMD Record fallback.
- ; Missing/empty Monitor artifacts are MACHINE (not passed to the agent).
- same => n,GotoIf($["${OPENAMD_CAPTURED}" = "MONITOR"]?analyze)
- ; Legacy capture remains only for explicit non-8399 callers of this context.
+ ; Measure Monitor artifacts. ~2KB ≈ real audio; below that is header/0s.
+ same => n,Set(OPENAMD_BYTES=0)
+ same => n,Set(OPENAMD_TMP=${STAT(s,${OPENAMD_FILE}.wav)})
+ same => n,ExecIf($["${OPENAMD_TMP}" = ""]?Set(OPENAMD_TMP=0))
+ same => n,ExecIf($[${OPENAMD_TMP} > ${OPENAMD_BYTES}]?Set(OPENAMD_BYTES=${OPENAMD_TMP}))
+ same => n,Set(OPENAMD_TMP=${STAT(s,${OPENAMD_FILE}-in.wav)})
+ same => n,ExecIf($["${OPENAMD_TMP}" = ""]?Set(OPENAMD_TMP=0))
+ same => n,ExecIf($[${OPENAMD_TMP} > ${OPENAMD_BYTES}]?Set(OPENAMD_BYTES=${OPENAMD_TMP}))
+ same => n,Set(OPENAMD_TMP=${STAT(s,${OPENAMD_FILE}-out.wav)})
+ same => n,ExecIf($["${OPENAMD_TMP}" = ""]?Set(OPENAMD_TMP=0))
+ same => n,ExecIf($[${OPENAMD_TMP} > ${OPENAMD_BYTES}]?Set(OPENAMD_BYTES=${OPENAMD_TMP}))
+ same => n,NoOp(OpenAMD capture bytes=${OPENAMD_BYTES} mode=${OPENAMD_CAPTURED})
+ same => n,GotoIf($[${OPENAMD_BYTES} >= 2000]?analyze)
+ ; Monitor empty/0s — Record a real second-opinion clip for the portal.
+ same => n,NoOp(OpenAMD Monitor empty/tiny — Record 4s second opinion)
  same => n,Answer()
- same => n,Wait(0.8)
- same => n,Record(${OPENAMD_FILE}:wav,8,5,q)
- same => n(analyze),NoOp(OpenAMD analyze capture=${OPENAMD_CAPTURED})
+ same => n,Wait(0.3)
+ same => n,Record(${OPENAMD_FILE}:wav,4,0,qy)
+ same => n,Set(OPENAMD_CAPTURED=RECORD)
+ same => n(analyze),NoOp(OpenAMD analyze capture=${OPENAMD_CAPTURED} bytes=${OPENAMD_BYTES})
  same => n,AGI(openamd.agi,${OPENAMD_ID},${OPENAMD_CAMPAIGN},${OPENAMD_CALLER},${OPENAMD_CALLED})
  same => n,NoOp(OpenAMD status=${OPENAMD_STATUS} conf=${OPENAMD_CONFIDENCE})
  same => n,GotoIf($["${OPENAMD_STATUS}" = "HUMAN"]?human)
@@ -345,19 +353,22 @@ exten => 8398,n,Hangup()
 '''.replace('__AMD_APP__', amd_app)
 
 new8399 = '''
-; --- OpenAMD 8399 (stock MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD second opinion) ---
-; AIAMD HUMAN (checked recording) → agent+scam; MACHINE/blank/0s → hangup;
-; AIAMD down/CPS with a usable recording → trust stock → agent (not PDROP).
-; Standard Monitor() captures the greeting concurrently with stock AMD.
-; No MixMonitor audiohook and no post-AMD Record/dead-air delay on this path.
+; --- OpenAMD 8399 ---
+; 1) Stock Vicidial AMD first (same AMD() line as 8369).
+; 2) MACHINE / non-human → AA hangup immediately (no portal POST).
+; 3) HUMAN|PERSON|NOTSURE → openamd-detect posts a real WAV to AIAMD for
+;    double-check (HUMAN / BLANK / VM / FAX). Portal never invents audio.
+; Monitor() runs during AMD to catch the greeting. No MixMonitor audiohook
+; (that caused one-way agent audio). No "m" merge — keep -in/-out for AGI.
+; If Monitor is empty, openamd-detect Records a fixed 4s clip before POST.
 exten => 8399,1,AGI(agi://127.0.0.1:4577/call_log)
 exten => 8399,n,Set(OPENAMD_ID=${EPOCH}-${RAND(10000,99999)})
 exten => 8399,n,Set(OPENAMD_FILE=/tmp/openamd-${OPENAMD_ID})
-exten => 8399,n,Monitor(wav,${OPENAMD_FILE},m)
+exten => 8399,n,Monitor(wav,${OPENAMD_FILE})
 exten => 8399,n,Playback(sip-silence)
 exten => 8399,n,__AMD_APP__
 exten => 8399,n,StopMonitor()
-exten => 8399,n,Wait(0.2)
+exten => 8399,n,Wait(0.8)
 exten => 8399,n,Set(OPENAMD_CAPTURED=MONITOR)
 exten => 8399,n,NoOp(8399 stock AMD AMDSTATUS=${AMDSTATUS} AMDCAUSE=${AMDCAUSE})
 exten => 8399,n,GotoIf($["${AMDSTATUS}" = "HUMAN"]?aiamd_check)
@@ -365,11 +376,11 @@ exten => 8399,n,GotoIf($["${AMDSTATUS}" = "PERSON"]?aiamd_check)
 exten => 8399,n,GotoIf($["${AMDSTATUS}" = "NOTSURE"]?aiamd_check)
 ; MACHINE / HANGUP / TOOLONG / all others → AA hangup (like 8398)
 exten => 8399,n,GotoIf($[1]?aa_hangup)
-exten => 8399,n(aiamd_check),NoOp(8399 AIAMD final decide)
+exten => 8399,n(aiamd_check),NoOp(8399 AIAMD second opinion — need real recording)
 exten => 8399,n,Gosub(openamd-detect,s,1(${CAMPCUST},))
 exten => 8399,n,NoOp(8399 AIAMD AMDSTATUS=${AMDSTATUS} AMDCAUSE=${AMDCAUSE})
 exten => 8399,n,GotoIf($["${AMDSTATUS}" = "HUMAN"]?aiamd_human)
-; Only an explicit AIAMD MACHINE reaches AA hangup after a stock-human result.
+; BLANK / MACHINE / FALLBACK after second opinion → AA hangup
 exten => 8399,n,GotoIf($[1]?aa_hangup)
 exten => 8399,n(aiamd_human),NoOp(8399 AIAMD HUMAN → agent)
 exten => 8399,n,AGI(VD_amd.agi,${EXTEN}-----NO)
@@ -541,8 +552,8 @@ echo "Campaign AMD extensions:"
 echo "  8369 = stock Vicidial AMD (untouched)"
 echo "  8398 = human-only (stock AMD; HUMAN/PERSON → agent; no scam)"
 echo "  8399 = stock MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD;"
-echo "         AIAMD HUMAN (checked recording)→agent+scam; MACHINE/blank/0s→hangup;"
-echo "         AIAMD down with a usable recording→trust stock HUMAN→agent"
+echo "         stock HUMAN→ensure real WAV (Monitor or Record)→AIAMD decide;"
+echo "         AIAMD HUMAN→agent+scam; BLANK/VM/FAX/0s→AA hangup"
 echo ""
 echo "Place ONE new call, then:"
 echo "  grep 'OpenAMD STORE' /var/log/asterisk/full | tail -5"

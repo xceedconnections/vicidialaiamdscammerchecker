@@ -20,8 +20,9 @@
 #
 # Modes:
 #   AGI(openamd.agi,ping)  — fast health check only (no WAV required)
-#   AGI(openamd.agi,ID,...) — analyze Monitor's merged /tmp/openamd-ID.wav
-#     (or its nonempty -in/-out artifact if the merge is unavailable).
+#   AGI(openamd.agi,ID,...) — analyze the largest of
+#     /tmp/openamd-ID.wav | -in.wav | -out.wav (Monitor and/or Record).
+#     Dialplan must Record a 4s clip when Monitor is empty before calling us.
 #     Missing/blank capture → MACHINE (no recording was checked).
 #     Clear MACHINE with audible speech still hangs up.
 #
@@ -347,25 +348,21 @@ END {
     }
 }
 
-# Monitor(wav,base,m) normally writes base.wav after StopMonitor(). On older
-# systems or a failed merge, prefer the caller receive leg (-in) before -out.
-# Select a nonempty artifact first; retain an existing zero-byte file so the
-# API can record a BLANK result and apply stock-HUMAN trust.
+# Prefer the largest Monitor/Record artifact. Order of preference when tied:
+# merged .wav, then callee receive leg (-in), then -out.
 my $wav = '';
+my $best_bytes = -1;
 for my $candidate (@wav_artifacts) {
+    next unless -f $candidate;
     my $candidate_bytes = -s $candidate;
-    if (-f $candidate && defined $candidate_bytes && $candidate_bytes > 0) {
+    $candidate_bytes = 0 unless defined $candidate_bytes;
+    if ($candidate_bytes > $best_bytes) {
+        $best_bytes = $candidate_bytes;
         $wav = $candidate;
-        last;
     }
 }
-if ($wav eq '') {
-    for my $candidate (@wav_artifacts) {
-        if (-f $candidate) {
-            $wav = $candidate;
-            last;
-        }
-    }
+if ($wav ne '') {
+    $AGI->verbose("OpenAMD pick wav=$wav bytes=$best_bytes", 1);
 }
 
 $AGI->set_variable('OPENAMD_STATUS', 'UNAVAILABLE');

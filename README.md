@@ -24,11 +24,17 @@ git checkout 10-08-2026-Working-STOCK-AIAMD
 |-----------|----------|
 | **8369** | Stock Vicidial AMD — **untouched** by this package (system `VD_amd.agi` unchanged) |
 | **8398** | Stock `AMD()` → only **HUMAN/PERSON** → agent; NOTSURE/MACHINE/HANGUP/TOOLONG/all others → AA hangup via `VD_amd_human_only.agi`. **No scam arm** (same as old 8389). |
-| **8399** | Runs the same stock `AMD()` application/parameters cloned from 8369 while standard `Monitor()` captures the greeting. **MACHINE** (and any status that is not HUMAN/PERSON/NOTSURE) → immediate AA hangup. **HUMAN / PERSON / NOTSURE** → `openamd-detect`. AIAMD audible **HUMAN** (recording checked) → agent + scam; audible **MACHINE**, blank, silent, or 0-second capture → AA hangup. AIAMD down/timeout/CPS on a usable recording → trust stock and pass to the agent. A missing recording is never passed through. |
+| **8399** | **Stock `AMD()` first** (same app/params as 8369). **MACHINE** (and any status that is not HUMAN/PERSON/NOTSURE) → immediate AA hangup — nothing is posted to AIAMD. **HUMAN / PERSON / NOTSURE** → ensure a real WAV exists → POST to AIAMD for double-check. AIAMD **HUMAN** → agent + scam; **MACHINE / BLANK / FAX / silent** → AA hangup. AIAMD down/timeout/CPS on a usable recording → trust stock and pass to the agent. |
 
-**MixMonitor-during-AMD remains reverted:** attaching `MixMonitor` to the live SIP/customer channel around stock `AMD()`, then `StopMixMonitor`, caused one-way agent audio. 8399 now uses Asterisk's standard channel recorder, `Monitor(wav,${OPENAMD_FILE},m)`, which VICIdial itself uses. It does not use the reverted MixMonitor audiohook.
+**MixMonitor-during-AMD remains reverted:** attaching `MixMonitor` around stock `AMD()` caused one-way agent audio. 8399 uses Asterisk `Monitor(wav,${OPENAMD_FILE})` (no auto-merge `m`) during AMD so `-in`/`-out` survive for the AGI.
 
-**Current 8399 capture:** `Monitor()` starts after call logging and capture ID/file setup, before `Playback(sip-silence)` and stock `AMD()`. `StopMonitor()` merges the stream to `/tmp/openamd-ID.wav`; the AGI can use a nonempty split artifact if the merged WAV is unavailable. Capturing concurrently preserves the greeting and adds no post-AMD five-second dead-air window. The 8399 path never falls back to `Answer()`/`Wait()`/`Record()`. Missing, blank, or 0-second capture is AA hangup. A portal outage on a usable recording still trusts stock HUMAN/PERSON/NOTSURE. Scam `MixMonitor` remains independent and arms only after AIAMD HUMAN on the agent-bound path.
+**Current 8399 capture:**
+1. `Monitor()` starts before stock `AMD()` to catch the greeting.
+2. Stock AMD decides. Non-human → AA (temp files deleted; no portal POST).
+3. Human path → `openamd-detect` measures Monitor bytes. If the largest artifact is under ~2KB (0s / header-only), it `Record()`s a fixed **4s** second-opinion clip (`silence-stop=0`).
+4. AGI posts the largest WAV to AIAMD. Portal decides HUMAN / BLANK / VM / FAX — it never invents audio from stock AMD alone.
+
+Scam `MixMonitor` remains independent and arms only after AIAMD HUMAN on the agent-bound path.
 
 Critical: **8399 must not Goto 8369**. Clear MACHINE still AA-hangs. Install strips leftover **8389** and **8397** (and rewrites 8398/8399).
 
