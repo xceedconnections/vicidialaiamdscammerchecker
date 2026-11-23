@@ -21,9 +21,9 @@
 #        8369 = stock Vicidial (untouched)
 #        8398 = stock AMD(), HUMAN/PERSON only → agent; else AA hangup (no scam)
 #        8399 = TryExec(Monitor()) captures concurrently with stock AMD;
-#               MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD final;
-#               AIAMD HUMAN→agent+scam; MACHINE/FAX/IVR→AA hangup;
-#               blank/silent OR AIAMD down/CPS → TRUST STOCK → agent
+#               MACHINE→AA (no portal); HUMAN/PERSON/NOTSURE→POST recording
+#               to AIAMD; HUMAN→agent+scam; MACHINE/FAX/IVR/BLANK→AA;
+#               always store recording on portal; AIAMD down→trust stock
 #        Strips leftover 8389 / 8397 / old 8398 / old 8399 on install
 #   5) Does NOT add B(openamd-capture) and does NOT alter Dial() args
 #
@@ -362,8 +362,8 @@ new8399 = '''
 ; --- OpenAMD 8399 ---
 ; 1) Stock Vicidial AMD first (same AMD() line as 8369).
 ; 2) MACHINE / non-human → AA hangup immediately (no portal POST).
-; 3) HUMAN|PERSON|NOTSURE → openamd-detect posts a real WAV to AIAMD for
-;    double-check. HUMAN→agent; MACHINE/FAX/IVR→AA; blank/down→trust stock.
+; 3) HUMAN|PERSON|NOTSURE → always POST recording to AIAMD (human vs AM).
+;    HUMAN→agent; MACHINE/FAX/IVR/BLANK→AA; AIAMD down→trust stock.
 ; Monitor() runs during AMD to catch the greeting. No MixMonitor audiohook
 ; (that caused one-way agent audio). No "m" merge — keep -in/-out for AGI.
 ; If Monitor is empty, openamd-detect Records a hard-capped 4s clip before POST.
@@ -575,7 +575,7 @@ echo "  8369 = stock Vicidial AMD (untouched)"
 echo "  8398 = human-only (stock AMD; HUMAN/PERSON → agent; no scam)"
 echo "  8399 = stock MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD;"
 echo "         TryExec(Monitor); empty→Record(...,8,4) max 4s→AIAMD decide;"
-echo "         AIAMD HUMAN→agent+scam; MACHINE/FAX/IVR→AA; blank/down→trust stock"
+echo "         AIAMD HUMAN→agent+scam; MACHINE/FAX/IVR/BLANK→AA; down→trust stock"
 echo ""
 echo "Place ONE new call, then:"
 echo "  grep 'OpenAMD STORE' /var/log/asterisk/full | tail -5"

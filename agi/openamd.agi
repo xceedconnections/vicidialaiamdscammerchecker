@@ -7,21 +7,20 @@
 #   lead/called   = NOT on the SIP channel               -> must come from
 #                   AstDB (stored at dial time) or reverse dialplan lookup
 #
-# Failover / second-opinion policy (8399 stock HUMAN|PERSON|NOTSURE path):
-#   Stock MACHINE → dialplan hangup (never reaches this AGI for decide).
-#   Stock HUMAN|PERSON|NOTSURE → AIAMD second opinion:
-#     AIAMD HUMAN with a real checked recording → agent + scam
-#     AIAMD MACHINE / FAX / IVR (portal maps FAX|IVR → MACHINE) → AA hangup
-#     blank / silent / missing WAV OR AIAMD down / ping fail / CPS / 429 →
-#       TRUST STOCK → HUMAN → agent (stock already cleared the live party)
+# Failover / second-opinion policy (8399):
+#   Stock MACHINE (answering machine) → dialplan AA hangup (never POSTs).
+#   Stock HUMAN|PERSON|NOTSURE → always POST a recording to AIAMD portal
+#     (Monitor and/or Record; if still empty, write a minimal silent WAV so
+#     the portal always stores a recording for the call):
+#       AIAMD HUMAN → agent + scam
+#       AIAMD MACHINE / FAX / IVR / BLANK / SILENT → AA hangup
+#       AIAMD down / CPS / 429 → TRUST STOCK → HUMAN → agent
 #
 # Modes:
 #   AGI(openamd.agi,ping)  — fast health check only (no WAV required)
 #   AGI(openamd.agi,ID,...) — analyze the largest of
 #     /tmp/openamd-ID.wav | -in.wav | -out.wav (Monitor and/or Record).
-#     Dialplan must Record a 4s clip when Monitor is empty before calling us.
-#     Missing/blank capture on stock HUMAN|PERSON|NOTSURE → trust stock.
-#     Clear MACHINE / FAX / IVR still hangs up.
+#     Every call that reaches analyze MUST upload audio to the portal.
 #
 use strict;
 use warnings;
@@ -38,7 +37,7 @@ my $arg_cid  = $ARGV[2] // '';
 my $arg_lead = $ARGV[3] // '';
 
 # Stock AMDSTATUS is set by dialplan AMD() before openamd-detect / this AGI.
-# Read early so ping-fail and blank-WAV paths can trust stock when appropriate.
+# Read early so portal-down paths can trust stock when appropriate.
 my $stock_amdstatus = '';
 {
     my $x = $AGI->get_variable('AMDSTATUS') // '';
@@ -58,7 +57,7 @@ sub phone {
     return $n =~ /^\d{7,15}$/;
 }
 
-# Stock already heard a live party — trust HUMAN when second opinion is blank/down.
+# Stock already heard a live party — trust HUMAN only when AIAMD is unreachable.
 sub stock_trust_human {
     return ($stock_amdstatus eq 'HUMAN'
          || $stock_amdstatus eq 'PERSON'
@@ -71,6 +70,27 @@ sub set_human_trust_stock {
     $AGI->set_variable('OPENAMD_CONFIDENCE', '0.90');
     $AGI->set_variable('OPENAMD_MS', '0');
     $AGI->verbose("OpenAMD HUMAN (trust stock $stock_amdstatus): $why", 1);
+}
+
+# Minimal 8 kHz mono PCM16 silent WAV (~0.25s) so portal always gets a file.
+sub write_minimal_silent_wav {
+    my ($path) = @_;
+    my $rate = 8000;
+    my $samples = int($rate * 0.25);
+    my $data_bytes = $samples * 2;
+    my $hdr = pack(
+        'A4VA4A4VvvVVvva4V',
+        'RIFF', 36 + $data_bytes, 'WAVE',
+        'fmt ', 16, 1, 1, $rate, $rate * 2, 2, 16,
+        'data', $data_bytes
+    );
+    if (open my $fh, '>', $path) {
+        binmode $fh;
+        print {$fh} $hdr, ("\x00" x $data_bytes);
+        close $fh;
+        return 1;
+    }
+    return 0;
 }
 
 sub load_conf {
@@ -165,24 +185,13 @@ sub set_unavailable {
     $AGI->verbose("OpenAMD UNAVAILABLE: $why", 1);
 }
 
-# Clear MACHINE (VM / FAX / IVR mapped to MACHINE by portal).
+# MACHINE / BLANK / FAX / IVR → AA hangup on 8399.
 sub set_machine {
     my ($why) = @_;
     $AGI->set_variable('OPENAMD_STATUS', 'MACHINE');
     $AGI->set_variable('OPENAMD_CONFIDENCE', '0.99');
     $AGI->set_variable('OPENAMD_MS', '0');
     $AGI->verbose("OpenAMD MACHINE: $why", 1);
-}
-
-# Blank / silent / missing recording on 8399 second-opinion path:
-# trust stock HUMAN|PERSON|NOTSURE → agent; otherwise MACHINE → AA.
-sub set_blank_or_trust_stock {
-    my ($why) = @_;
-    if (stock_trust_human()) {
-        set_human_trust_stock("blank/silent → trust stock ($why)");
-        return;
-    }
-    set_machine("no usable recording — not passed to agent ($why)");
 }
 
 my ($url, $key, $ssl_verify) = load_conf('http://127.0.0.1/api/v1/analyze', '', 'auto');
@@ -373,20 +382,35 @@ unless ($key) {
     set_unavailable('API key missing');
     exit 0;
 }
-unless ($wav ne '' && -f $wav) {
-    # No file — trust stock on 8399 HUMAN|PERSON|NOTSURE path.
-    set_blank_or_trust_stock("Monitor wav missing: ${wav_base}{.wav,-in.wav,-out.wav}");
-    exit 0;
+
+# Every call that reaches analyze must upload audio. Missing/empty → silent WAV.
+if ($wav eq '' || !-f $wav) {
+    $wav = "${wav_base}.wav";
+    push @wav_artifacts, $wav unless grep { $_ eq $wav } @wav_artifacts;
+    if (write_minimal_silent_wav($wav)) {
+        $AGI->verbose("OpenAMD wrote minimal silent WAV for portal POST: $wav", 1);
+    } else {
+        set_unavailable("cannot create WAV for portal POST: $wav");
+        exit 0;
+    }
 }
 my $wav_bytes = -s $wav;
 $wav_bytes = 0 unless defined $wav_bytes;
 if ($wav_bytes < 200) {
-    # Header-only / 0-second capture. Still POST so the portal can log BLANK;
-    # after response we trust stock (or AA if stock was not human).
-    $AGI->verbose(
-        "OpenAMD blank wav ${wav_bytes} bytes (stock=$stock_amdstatus) - post then trust/AA",
-        1
-    );
+    # Header-only / truncated — replace with a real silent WAV so portal stores it.
+    if (write_minimal_silent_wav($wav)) {
+        $wav_bytes = -s $wav;
+        $wav_bytes = 0 unless defined $wav_bytes;
+        $AGI->verbose(
+            "OpenAMD replaced tiny capture with silent WAV ${wav_bytes}B (stock=$stock_amdstatus) — POST for blank check",
+            1
+        );
+    } else {
+        $AGI->verbose(
+            "OpenAMD blank wav ${wav_bytes} bytes (stock=$stock_amdstatus) — POST as-is for blank check",
+            1
+        );
+    }
 }
 
 # Quick re-check before spending analyze time (server may have gone down mid-call)
@@ -395,11 +419,7 @@ if ($wav_bytes < 200) {
     my $hr = eval { $ua_h->get($health) };
     if (!$hr || !$hr->is_success) {
         my $err = $hr ? $hr->status_line : ($@ || 'no response');
-        if ($wav_bytes < 200) {
-            set_blank_or_trust_stock("blank wav + health failed: $err");
-        } else {
-            set_unavailable("pre-analyze health failed: $err");
-        }
+        set_unavailable("pre-analyze health failed: $err");
         exit 0;
     }
 }
@@ -431,49 +451,32 @@ my $res = eval {
 };
 
 if (!$res) {
-    if ($wav_bytes < 200) {
-        set_blank_or_trust_stock('blank wav + analyze exception: ' . ($@ || 'unknown'));
-    } else {
-        set_unavailable('analyze request exception: ' . ($@ || 'unknown'));
-    }
+    set_unavailable('analyze request exception: ' . ($@ || 'unknown'));
 } elsif ($res->code == 429) {
-    if ($wav_bytes < 200) {
-        set_blank_or_trust_stock('blank wav + CPS limit');
-    } else {
-        set_unavailable('CPS limit exceeded on analyze', 'CPS');
-    }
+    set_unavailable('CPS limit exceeded on analyze', 'CPS');
 } elsif ($res->code == 400) {
-    set_blank_or_trust_stock('HTTP 400 empty/blank audio');
+    # Portal rejected audio — still treat as blank/AA after attempted check.
+    set_machine('HTTP 400 empty/blank audio → AA');
 } elsif ($res->is_success) {
     my $b = $res->decoded_content;
     my ($st) = $b =~ /"status"\s*:\s*"([^"]+)"/;
     my ($cf) = $b =~ /"confidence"\s*:\s*([0-9.]+)/;
     my ($ms) = $b =~ /"processing_ms"\s*:\s*([0-9]+)/;
     $st = $st // 'ERROR';
-    # Blank/silent → trust stock. Clear MACHINE (incl. FAX/IVR mapped) → AA.
-    # HUMAN with a real clip → agent.
-    if ($wav_bytes < 200 || $st eq 'BLANK' || $st eq 'SILENT') {
-        set_blank_or_trust_stock("wav ${wav_bytes}B portal=$st");
-    } elsif ($st eq 'HUMAN' || $st eq 'MACHINE') {
-        $AGI->set_variable('OPENAMD_STATUS', $st);
+    # Portal checked recording: HUMAN→agent; MACHINE/BLANK/FAX/IVR→AA.
+    if ($st eq 'HUMAN') {
+        $AGI->set_variable('OPENAMD_STATUS', 'HUMAN');
         $AGI->set_variable('OPENAMD_CONFIDENCE', $cf // '0');
         $AGI->set_variable('OPENAMD_MS', $ms // '0');
-        $AGI->verbose("OpenAMD OK $st caller=$outcid called=$lead", 1);
-    } elsif ($st eq 'FAX' || $st eq 'IVR' || $st eq 'SIT') {
-        set_machine("portal $st → AA");
+        $AGI->verbose("OpenAMD OK HUMAN caller=$outcid called=$lead", 1);
+    } elsif ($st eq 'MACHINE' || $st eq 'BLANK' || $st eq 'SILENT'
+          || $st eq 'FAX' || $st eq 'IVR' || $st eq 'SIT') {
+        set_machine("portal $st → AA (human vs answering-machine check)");
     } else {
-        if ($wav_bytes < 200) {
-            set_blank_or_trust_stock("blank wav + unexpected status=$st");
-        } else {
-            set_unavailable("unexpected analyze status=$st");
-        }
+        set_unavailable("unexpected analyze status=$st");
     }
 } else {
-    if ($wav_bytes < 200) {
-        set_blank_or_trust_stock('blank wav + HTTP ' . $res->status_line);
-    } else {
-        set_unavailable('HTTP ' . $res->status_line);
-    }
+    set_unavailable('HTTP ' . $res->status_line);
 }
 
 # Cleanup AstDB keys for this linkedid
