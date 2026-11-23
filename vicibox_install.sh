@@ -19,7 +19,7 @@
 #            8398 = human-only (stock AMD; HUMAN/PERSON → agent; else AA; no scam)
 #            8399 = Monitor captures concurrently with stock AMD;
 #                   MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD final;
-#                   blank/0s/missing recording→AA hangup; down/CPS with a real recording→trust stock
+#                   MACHINE/FAX/IVR→AA; blank/silent or AIAMD down→trust stock→agent
 #                   (NOT Goto 8369). Strips leftover 8389/8397 on install.
 #        - Stores Caller ID + Called Number at dial time into AstDB for
 #          ANY VICIdial dial prefix (_8. _9. _87899. _94455. _94556. _6. etc.)
@@ -531,8 +531,9 @@ echo "==========================================="
 echo " Campaign AMD / routing extensions:"
 echo "   8369 = stock Vicidial AMD (untouched)"
 echo "   8398 = human-only (stock AMD; HUMAN/PERSON → agent; else AA; no scam)"
-echo "   8399 = stock AMD first; MACHINE→AA; HUMAN→real WAV→AIAMD decide;"
-echo "          TryExec(Monitor); empty→Record(8,4) max 4s; HUMAN→agent; blank/VM→AA"
+echo "   8399 = stock AMD first; MACHINE→AA; HUMAN/NOTSURE→AIAMD decide;"
+echo "          TryExec(Monitor); empty→Record(8,4); HUMAN→agent; MACHINE/FAX/IVR→AA;"
+echo "          blank/AIAMD-down→trust stock→agent"
 echo " AGI : ${AGI1}/openamd.agi + ${AGI1}/VD_amd_human_only.agi"
 echo " URL : ${ANALYZE_URL}"
 echo " Conf: ${CONF}"
@@ -545,8 +546,8 @@ echo "   - fix_local_presence_metadata.sh (any dial prefix + 8398/8399; strips 8
 echo "   - openamd_auto_store.sh          (auto-inject when NEW prefixes are added)"
 echo "   - update.php                     (browser update without SSH/PuTTY)"
 echo ""
-echo " Failover: blank or 0-second audio is AA (not sent to the agent)."
-echo "           If AIAMD is down and a usable recording exists, trust stock."
+echo " Failover: blank/silent OR AIAMD down → trust stock HUMAN → agent."
+echo "           Clear MACHINE / FAX / IVR from AIAMD → AA hangup."
 echo ""
 echo " Portal columns:"
 echo "   Caller ID     = local-presence CID (CURL/RAND result)"

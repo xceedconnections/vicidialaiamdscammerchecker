@@ -24,7 +24,7 @@ git checkout 10-08-2026-Working-STOCK-AIAMD
 |-----------|----------|
 | **8369** | Stock Vicidial AMD — **untouched** by this package (system `VD_amd.agi` unchanged) |
 | **8398** | Stock `AMD()` → only **HUMAN/PERSON** → agent; NOTSURE/MACHINE/HANGUP/TOOLONG/all others → AA hangup via `VD_amd_human_only.agi`. **No scam arm** (same as old 8389). |
-| **8399** | **Stock `AMD()` first** (same app/params as 8369). **MACHINE** (and any status that is not HUMAN/PERSON/NOTSURE) → immediate AA hangup — nothing is posted to AIAMD. **HUMAN / PERSON / NOTSURE** → ensure a real WAV exists → POST to AIAMD for double-check. AIAMD **HUMAN** → agent + scam; **MACHINE / BLANK / FAX / silent** → AA hangup. AIAMD down/timeout/CPS on a usable recording → trust stock and pass to the agent. |
+| **8399** | **Stock `AMD()` first** (same app/params as 8369). **MACHINE** (and any status that is not HUMAN/PERSON/NOTSURE) → immediate AA hangup — nothing is posted to AIAMD. **HUMAN / PERSON / NOTSURE** → ensure a real WAV exists → POST to AIAMD for double-check. AIAMD **HUMAN** → agent + scam; **MACHINE / FAX / IVR** → AA hangup; **blank / silent / AIAMD down** → trust stock → agent. |
 
 **MixMonitor-during-AMD remains reverted:** attaching `MixMonitor` around stock `AMD()` caused one-way agent audio. 8399 uses `TryExec(Monitor(wav,${OPENAMD_FILE}))` (no auto-merge `m`) during AMD so `-in`/`-out` survive for the AGI. Bare `Monitor()` is wrapped in `TryExec` so a failed Monitor (cannot open files / already monitored) does **not** abort the dialplan — that used to cause Vicidial **NA** while the SIP trunk stayed up with no AIAMD POST.
 
