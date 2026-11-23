@@ -20,7 +20,7 @@
 #   4) Injects AMD routing:
 #        8369 = stock Vicidial (untouched)
 #        8398 = stock AMD(), HUMAN/PERSON only → agent; else AA hangup (no scam)
-#        8399 = Monitor() captures concurrently with stock AMD;
+#        8399 = TryExec(Monitor()) captures concurrently with stock AMD;
 #               MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD final;
 #               AIAMD HUMAN→agent+scam; clear MACHINE+speech→hangup;
 #               blank/silent second-opinion OR AIAMD down/CPS → TRUST STOCK
@@ -249,9 +249,16 @@ block = r'''
 ;
 ; Capture policy:
 ;   1) Prefer the concurrent Monitor greeting clip from 8399 (if large enough).
-;   2) If Monitor is missing/tiny (0s), Record a fixed 4s second-opinion window
-;      while the callee is still on the line (silence-stop MUST be 0).
+;   2) If Monitor is missing/tiny (0s), Record a hard-capped 4s second-opinion
+;      window while the callee is still on the line.
 ;   Never POST a header-only/0s file and pretend it was checked.
+;
+; NA / orphan SIP root cause (Record):
+;   Asterisk Record(file,silence,maxduration): maxduration=0 means UNLIMITED
+;   until silence. Continuous fax/tone/noise never ends → SIP stays up while
+;   Vicidial times out as NA and AIAMD never gets a POST.
+;   Fix: Record(...,8,4,qy) — silence 8 > max 4 so a brief pause does not end
+;   early, but recording ALWAYS stops by 4 seconds.
 ;
 ; Do NOT use MixMonitor/StopMixMonitor here: that audiohook caused one-way
 ; agent audio after the bridge.
@@ -283,11 +290,11 @@ exten => s,1,NoOp(OpenAMD detect lid=${CHANNEL(linkedid)})
  same => n,ExecIf($[${OPENAMD_TMP} > ${OPENAMD_BYTES}]?Set(OPENAMD_BYTES=${OPENAMD_TMP}))
  same => n,NoOp(OpenAMD capture bytes=${OPENAMD_BYTES} mode=${OPENAMD_CAPTURED})
  same => n,GotoIf($[${OPENAMD_BYTES} >= 2000]?analyze)
- ; Monitor empty/0s — Record a real second-opinion clip for the portal.
- same => n,NoOp(OpenAMD Monitor empty/tiny — Record 4s second opinion)
+ ; Monitor empty/0s — Record hard-capped 4s (silence 8 > max 4; never unlimited).
+ same => n,NoOp(OpenAMD Monitor empty/tiny — Record max 4s second opinion)
  same => n,Answer()
  same => n,Wait(0.3)
- same => n,Record(${OPENAMD_FILE}:wav,4,0,qy)
+ same => n,Record(${OPENAMD_FILE}:wav,8,4,qy)
  same => n,Set(OPENAMD_CAPTURED=RECORD)
  same => n(analyze),NoOp(OpenAMD analyze capture=${OPENAMD_CAPTURED} bytes=${OPENAMD_BYTES})
  same => n,AGI(openamd.agi,${OPENAMD_ID},${OPENAMD_CAMPAIGN},${OPENAMD_CALLER},${OPENAMD_CALLED})
@@ -360,15 +367,21 @@ new8399 = '''
 ;    double-check (HUMAN / BLANK / VM / FAX). Portal never invents audio.
 ; Monitor() runs during AMD to catch the greeting. No MixMonitor audiohook
 ; (that caused one-way agent audio). No "m" merge — keep -in/-out for AGI.
-; If Monitor is empty, openamd-detect Records a fixed 4s clip before POST.
+; If Monitor is empty, openamd-detect Records a hard-capped 4s clip before POST.
+;
+; NA / orphan SIP root cause (Monitor):
+;   Asterisk Monitor() returns -1 if it fails (cannot open files / already
+;   monitored). A bare Monitor() then aborts the dialplan → Local/SIP race →
+;   Vicidial NA while the trunk may stay up. Wrap with TryExec so failure
+;   does NOT hang up; AMD and AIAMD still proceed (Record fallback if needed).
 exten => 8399,1,AGI(agi://127.0.0.1:4577/call_log)
 exten => 8399,n,Set(OPENAMD_ID=${EPOCH}-${RAND(10000,99999)})
 exten => 8399,n,Set(OPENAMD_FILE=/tmp/openamd-${OPENAMD_ID})
-exten => 8399,n,Monitor(wav,${OPENAMD_FILE})
+exten => 8399,n,TryExec(Monitor(wav,${OPENAMD_FILE}))
 exten => 8399,n,Playback(sip-silence)
 exten => 8399,n,__AMD_APP__
-exten => 8399,n,StopMonitor()
-exten => 8399,n,Wait(0.8)
+exten => 8399,n,TryExec(StopMonitor())
+exten => 8399,n,Wait(0.2)
 exten => 8399,n,Set(OPENAMD_CAPTURED=MONITOR)
 exten => 8399,n,NoOp(8399 stock AMD AMDSTATUS=${AMDSTATUS} AMDCAUSE=${AMDCAUSE})
 exten => 8399,n,GotoIf($["${AMDSTATUS}" = "HUMAN"]?aiamd_check)
@@ -528,15 +541,15 @@ asterisk -rx "dialplan show 138399@default" | head -10
 
 echo ""
 echo ""
-echo "=== Verify: Monitor capture around 8399 AMD (no MixMonitor audiohook) ==="
+echo "=== Verify: TryExec(Monitor) around 8399 AMD (no MixMonitor audiohook) ==="
 OAMD_8399="$(asterisk -rx "dialplan show 8399@default" 2>/dev/null || true)"
 OAMD_DETECT="$(asterisk -rx "dialplan show openamd-detect" 2>/dev/null || true)"
-if echo "$OAMD_8399" | grep -Eq 'Monitor\(' \
-  && echo "$OAMD_8399" | grep -Eq 'StopMonitor\(' \
+if echo "$OAMD_8399" | grep -Eq 'TryExec\(Monitor\(' \
+  && echo "$OAMD_8399" | grep -Eq 'TryExec\(StopMonitor\(' \
   && ! echo "$OAMD_8399" | grep -Eq '(MixMonitor|StopMixMonitor)\('; then
-  echo "OK: 8399 uses Monitor/StopMonitor and no MixMonitor application"
+  echo "OK: 8399 uses TryExec(Monitor/StopMonitor) and no MixMonitor application"
 else
-  echo "ERROR: 8399 capture applications are not the expected Monitor/StopMonitor pair"
+  echo "ERROR: 8399 capture applications are not the expected TryExec(Monitor/StopMonitor) pair"
   exit 1
 fi
 if echo "$OAMD_8399" | grep -q 'OPENAMD_CAPTURED=MONITOR'; then
@@ -545,12 +558,12 @@ else
   echo "ERROR: 8399 missing Set(OPENAMD_CAPTURED=MONITOR)"
   exit 1
 fi
-# Empty Monitor must fall back to Record(4s) — do not require old MONITOR skip GotoIf.
+# Empty Monitor must fall back to Record(8,4) hard max 4s — never unlimited maxduration=0.
 if echo "$OAMD_DETECT" | grep -q 'OPENAMD_BYTES' \
-  && echo "$OAMD_DETECT" | grep -Eq 'Record\('; then
-  echo "OK: openamd-detect measures Monitor bytes and can Record a second-opinion clip"
+  && echo "$OAMD_DETECT" | grep -Eq 'Record\(\$\{OPENAMD_FILE\}:wav,8,4,qy\)'; then
+  echo "OK: openamd-detect measures Monitor bytes and Records hard-capped 4s (8,4)"
 else
-  echo "ERROR: openamd-detect missing OPENAMD_BYTES / Record fallback for empty Monitor"
+  echo "ERROR: openamd-detect missing OPENAMD_BYTES / Record(...,8,4,qy) fallback"
   echo "---- dialplan show openamd-detect (first 40 lines) ----"
   echo "$OAMD_DETECT" | head -40
   exit 1
@@ -562,7 +575,7 @@ echo "Campaign AMD extensions:"
 echo "  8369 = stock Vicidial AMD (untouched)"
 echo "  8398 = human-only (stock AMD; HUMAN/PERSON → agent; no scam)"
 echo "  8399 = stock MACHINE→hangup; HUMAN/PERSON/NOTSURE→AIAMD;"
-echo "         stock HUMAN→ensure real WAV (Monitor or Record)→AIAMD decide;"
+echo "         TryExec(Monitor); empty→Record(...,8,4) max 4s→AIAMD decide;"
 echo "         AIAMD HUMAN→agent+scam; BLANK/VM/FAX/0s→AA hangup"
 echo ""
 echo "Place ONE new call, then:"

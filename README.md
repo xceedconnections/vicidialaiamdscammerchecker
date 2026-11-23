@@ -26,12 +26,12 @@ git checkout 10-08-2026-Working-STOCK-AIAMD
 | **8398** | Stock `AMD()` → only **HUMAN/PERSON** → agent; NOTSURE/MACHINE/HANGUP/TOOLONG/all others → AA hangup via `VD_amd_human_only.agi`. **No scam arm** (same as old 8389). |
 | **8399** | **Stock `AMD()` first** (same app/params as 8369). **MACHINE** (and any status that is not HUMAN/PERSON/NOTSURE) → immediate AA hangup — nothing is posted to AIAMD. **HUMAN / PERSON / NOTSURE** → ensure a real WAV exists → POST to AIAMD for double-check. AIAMD **HUMAN** → agent + scam; **MACHINE / BLANK / FAX / silent** → AA hangup. AIAMD down/timeout/CPS on a usable recording → trust stock and pass to the agent. |
 
-**MixMonitor-during-AMD remains reverted:** attaching `MixMonitor` around stock `AMD()` caused one-way agent audio. 8399 uses Asterisk `Monitor(wav,${OPENAMD_FILE})` (no auto-merge `m`) during AMD so `-in`/`-out` survive for the AGI.
+**MixMonitor-during-AMD remains reverted:** attaching `MixMonitor` around stock `AMD()` caused one-way agent audio. 8399 uses `TryExec(Monitor(wav,${OPENAMD_FILE}))` (no auto-merge `m`) during AMD so `-in`/`-out` survive for the AGI. Bare `Monitor()` is wrapped in `TryExec` so a failed Monitor (cannot open files / already monitored) does **not** abort the dialplan — that used to cause Vicidial **NA** while the SIP trunk stayed up with no AIAMD POST.
 
 **Current 8399 capture:**
-1. `Monitor()` starts before stock `AMD()` to catch the greeting.
+1. `TryExec(Monitor(...))` starts before stock `AMD()` to catch the greeting; `TryExec(StopMonitor())` + short `Wait(0.2)` after AMD.
 2. Stock AMD decides. Non-human → AA (temp files deleted; no portal POST).
-3. Human path → `openamd-detect` measures Monitor bytes. If the largest artifact is under ~2KB (0s / header-only), it `Record()`s a fixed **4s** second-opinion clip (`silence-stop=0`).
+3. Human path → `openamd-detect` measures Monitor bytes. If the largest artifact is under ~2KB (0s / header-only), it `Record()`s a hard-capped **4s** clip: `Record(...,8,4,qy)` (silence 8 > max 4). Never use `maxduration=0` — continuous fax/tone never ends, SIP orphans, Vicidial times out as NA, portal never sees the call.
 4. AGI posts the largest WAV to AIAMD. Portal decides HUMAN / BLANK / VM / FAX — it never invents audio from stock AMD alone.
 
 Scam `MixMonitor` remains independent and arms only after AIAMD HUMAN on the agent-bound path.
@@ -128,8 +128,8 @@ asterisk -rx "dialplan show 8369@default"
 asterisk -rx "dialplan show 8398@default"
 asterisk -rx "dialplan show 8399@default"
 asterisk -rx "dialplan show openamd-detect"
-# 8399 output must show Monitor/StopMonitor and OPENAMD_CAPTURED=MONITOR (no MixMonitor).
-# openamd-detect must show OPENAMD_BYTES + Record() fallback when Monitor is empty.
+# 8399 output must show TryExec(Monitor/StopMonitor) and OPENAMD_CAPTURED=MONITOR (no MixMonitor).
+# openamd-detect must show OPENAMD_BYTES + Record(...,8,4,qy) hard-capped fallback.
 # 8389 / 8397 should be gone after install
 asterisk -rx "dialplan show 8389@default"
 ls -l /var/lib/asterisk/agi-bin/VD_amd_human_only.agi /var/lib/asterisk/agi-bin/VD_amd.agi

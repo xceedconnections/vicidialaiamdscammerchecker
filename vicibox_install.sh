@@ -353,14 +353,15 @@ if ! echo "$OAMD_8399" | grep -q 'AMD'; then
   exit 1
 fi
 # Verify actual loaded applications, not installer source comments.
-if ! echo "$OAMD_8399" | grep -Eq 'Monitor\('; then
-  echo "ERROR: extension 8399 missing Monitor() before stock AMD."
+# TryExec wraps Monitor/StopMonitor so failure does not abort dialplan (NA/orphan).
+if ! echo "$OAMD_8399" | grep -Eq 'TryExec\(Monitor\('; then
+  echo "ERROR: extension 8399 missing TryExec(Monitor(...)) before stock AMD."
   echo "---- dialplan show 8399@default (first 30 lines) ----"
   echo "$OAMD_8399" | head -30
   exit 1
 fi
-if ! echo "$OAMD_8399" | grep -Eq 'StopMonitor\('; then
-  echo "ERROR: extension 8399 missing StopMonitor() after stock AMD."
+if ! echo "$OAMD_8399" | grep -Eq 'TryExec\(StopMonitor\('; then
+  echo "ERROR: extension 8399 missing TryExec(StopMonitor()) after stock AMD."
   echo "---- dialplan show 8399@default (first 30 lines) ----"
   echo "$OAMD_8399" | head -30
   exit 1
@@ -378,15 +379,15 @@ if ! echo "$OAMD_8399" | grep -q 'OPENAMD_CAPTURED=MONITOR'; then
   exit 1
 fi
 OAMD_DETECT="$(asterisk -rx "dialplan show openamd-detect" 2>/dev/null || true)"
-# Empty Monitor → Record(4s) second opinion. Do not require old MONITOR skip GotoIf.
+# Empty Monitor → Record(8,4) hard max 4s. Never unlimited maxduration=0 (orphan SIP).
 if ! echo "$OAMD_DETECT" | grep -q 'OPENAMD_BYTES'; then
   echo "ERROR: openamd-detect missing OPENAMD_BYTES size check for Monitor artifacts."
   echo "---- dialplan show openamd-detect (first 40 lines) ----"
   echo "$OAMD_DETECT" | head -40
   exit 1
 fi
-if ! echo "$OAMD_DETECT" | grep -Eq 'Record\('; then
-  echo "ERROR: openamd-detect missing Record() fallback when Monitor is empty/tiny."
+if ! echo "$OAMD_DETECT" | grep -Eq 'Record\(\$\{OPENAMD_FILE\}:wav,8,4,qy\)'; then
+  echo "ERROR: openamd-detect missing Record(...,8,4,qy) hard-capped fallback."
   echo "---- dialplan show openamd-detect (first 40 lines) ----"
   echo "$OAMD_DETECT" | head -40
   exit 1
@@ -531,7 +532,7 @@ echo " Campaign AMD / routing extensions:"
 echo "   8369 = stock Vicidial AMD (untouched)"
 echo "   8398 = human-only (stock AMD; HUMAN/PERSON → agent; else AA; no scam)"
 echo "   8399 = stock AMD first; MACHINE→AA; HUMAN→real WAV→AIAMD decide;"
-echo "          Monitor empty → Record 4s; AIAMD HUMAN→agent; blank/VM→AA"
+echo "          TryExec(Monitor); empty→Record(8,4) max 4s; HUMAN→agent; blank/VM→AA"
 echo " AGI : ${AGI1}/openamd.agi + ${AGI1}/VD_amd_human_only.agi"
 echo " URL : ${ANALYZE_URL}"
 echo " Conf: ${CONF}"
